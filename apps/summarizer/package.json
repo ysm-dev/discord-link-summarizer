@@ -1,18 +1,20 @@
 {
-  "name": "@discord-link-summarizer/cli",
+  "name": "@discord-link-summarizer/summarizer",
   "version": "0.0.0",
   "private": true,
   "bin": {
-    "duration": "./src/index.ts"
+    "discord-link-summarizer": "./src/index.ts"
   },
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@discord-link-summarizer/duration": "workspace:*"
+    "@effect/platform-bun": "4.0.0-rc.117",
+    "effect": "4.0.0-rc.117"
   },
   "devDependencies": {
+    "@effect/vitest": "4.0.0-rc.117",
     "@types/node": "26.6.2",
     "typescript": "7.0.2",
     "vitest": "5.0.1"
