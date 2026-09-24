@@ -14,7 +14,7 @@ Single-context: root `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.
 
 ## Quality gates
 
-This repo enforces eight gates. They are not advisory. `bun run ci` runs all of them and CI blocks on it.
+This repo enforces nine gates. They are not advisory. `bun run ci` runs all of them and CI blocks on it.
 
 | Gate                  | Threshold      | Enforced by                     |
 | --------------------- | -------------- | ------------------------------- |
@@ -26,13 +26,16 @@ This repo enforces eight gates. They are not advisory. `bun run ci` runs all of 
 | Dead code             | 0              | knip                            |
 | Duplicated code       | 0              | jscpd                           |
 | `any` types           | 0              | oxlint `no-explicit-any`        |
+| Effect diagnostics    | clean          | `effect-tsgo diagnostics`       |
 
 ### Rules that are easy to get wrong
 
 - **`any` is banned outright.** No exceptions.
-- **`unknown` is allowed only at a trust boundary** — a function taking untrusted input (CLI arguments, parsed JSON, environment variables) and narrowing it before anything downstream sees it. It is banned in every other declared parameter, return, or field type. See `packages/duration/src/parse-duration.ts` for the intended shape.
+- **`unknown` is allowed only at a trust boundary** — a function taking untrusted input (CLI arguments, parsed JSON, environment variables) and narrowing it before anything downstream sees it. It is banned in every other declared parameter, return, or field type. Use Effect Schema to decode external data.
 - **Coverage is per file, not global.** A global average is trivially gamed by one large well-covered file.
-- **Untestable code goes in a thin edge file**, not behind a coverage ignore comment. `apps/cli/src/index.ts` is the worked example: all logic lives in `main.ts`, and the shim that reads `process.argv` is the only excused file.
+- **Untestable code goes in a thin edge file**, not behind a coverage ignore comment. `apps/summarizer/src/index.ts` provides the Bun platform and runs `main` with `BunRuntime.runMain`; all logic belongs in testable modules.
+- **Effect diagnostics need the inline `--lspconfig`** in `effect:check`; without configuration, the tool checks zero files and exits successfully. `bun run verify-gates` checks that a floating Effect fails with `floatingEffect`, then that clean code passes.
+- **Tests and fakes live in `apps/summarizer/test/`**, outside the source tree measured by coverage and mutation testing. Use `@effect/vitest` and its test clock for Effect programs.
 
 ### When a gate blocks you
 

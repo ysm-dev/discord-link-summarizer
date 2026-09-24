@@ -1,8 +1,8 @@
 {
   "coverage": [
     {
-      "path": "apps/cli/src/index.ts",
-      "reason": "Entry shim: reads process.argv and exits. All logic lives in main.ts, which is fully covered.",
+      "path": "apps/summarizer/src/index.ts",
+      "reason": "Entry shim: provides Bun platform services and runs the program with BunRuntime.runMain. All logic lives in testable modules.",
       "added": "2026-09-20"
     }
   ],

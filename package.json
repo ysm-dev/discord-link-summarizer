@@ -2,26 +2,26 @@
   "name": "discord-link-summarizer",
   "private": true,
   "workspaces": [
-    "apps/*",
-    "packages/*"
+    "apps/*"
   ],
   "type": "module",
   "scripts": {
-    "ci": "bun run format:check && bun run lint && bun run typecheck && bun run test && bun run knip && bun run dup && bun run exceptions && bun run verify-gates && bun run mutate",
+    "ci": "bun run format:check && bun run lint && bun run typecheck && bun run effect:check && bun run test && bun run knip && bun run dup && bun run exceptions && bun run verify-gates && bun run mutate",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
     "lint": "oxlint --type-aware --report-unused-disable-directives",
     "typecheck": "turbo run typecheck && tsc --noEmit -p tsconfig.json",
+    "effect:check": "effect-tsgo diagnostics --project apps/summarizer/tsconfig.json --strict --lspconfig '{\"diagnosticSeverity\":{\"floatingEffect\":\"error\",\"missingReturnYieldStar\":\"error\"}}'",
     "test": "vitest run --coverage",
     "knip": "knip && knip --production",
     "dup": "jscpd",
     "mutate": "stryker run",
     "exceptions": "bun run scripts/exceptions.ts",
     "verify-gates": "bun run scripts/verify-gates.ts",
-    "prepare": "husky",
-    "init": "bun run scripts/init.ts"
+    "prepare": "husky"
   },
   "devDependencies": {
+    "@effect/tsgo": "0.45.0",
     "@stryker-mutator/core": "10.0.0",
     "@stryker-mutator/vitest-runner": "10.0.0",
     "@types/node": "26.6.2",

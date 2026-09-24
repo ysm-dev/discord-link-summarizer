@@ -2,7 +2,7 @@
 
 A Discord bot that summarizes shared links.
 
-Built on [ysm-dev/ts-template](https://github.com/ysm-dev/ts-template): bun, Turborepo, TypeScript 7, and eight quality gates that block CI. The premise is that when agents write most of the code, review does not scale but gates do.
+Built on [ysm-dev/ts-template](https://github.com/ysm-dev/ts-template): bun, Turborepo, TypeScript 7, and nine quality gates that block CI. The premise is that when agents write most of the code, review does not scale but gates do.
 
 ## Quick start
 
@@ -14,11 +14,14 @@ bun run ci
 ## Layout
 
 ```
-apps/cli/              Example application. Zero dependencies, no build step.
-packages/duration/     Example library. Demonstrates narrowing `unknown` at a trust boundary.
+apps/summarizer/src/   Single Effect application and its internal modules; no build step.
+apps/summarizer/test/  Effect tests and platform-edge fakes, outside measured source.
 scripts/               Repo tooling: exceptions report, gate verification.
 quality-exceptions.json  The only place file-level gate exceptions may live.
 ```
+
+The entry shim provides `BunServices.layer` and runs `main` with `BunRuntime.runMain`.
+Until Run integration lands, `bun apps/summarizer/src/index.ts` exits non-zero with an explicit message.
 
 ## The gates
 
@@ -30,6 +33,7 @@ quality-exceptions.json  The only place file-level gate exceptions may live.
 | Lines per file        | < 500          | `bun run lint`         |
 | `any` types           | 0              | `bun run lint`         |
 | Types                 | clean          | `bun run typecheck`    |
+| Effect diagnostics    | clean          | `bun run effect:check` |
 | Coverage              | 100%, per file | `bun run test`         |
 | Dead code             | 0              | `bun run knip`         |
 | Duplicated code       | 0              | `bun run dup`          |
@@ -42,6 +46,7 @@ quality-exceptions.json  The only place file-level gate exceptions may live.
 - **bun installs and runs scripts; Node runs tests.** Vitest treats bun as a package manager only, and the v8 coverage provider does not work on the bun runtime.
 - **No build step anywhere.** Packages export TypeScript source directly. A compiled package that has not been built makes type-aware lint and knip exit 0 while enforcing nothing — a silent false pass.
 - **Exact version pins, no ranges.** oxfmt is pre-1.0 with no semver protection on formatting output, and `oxlint-tsgolint` is hard-pinned to a TypeScript patch release.
+- **Effect v4 is pinned to `4.0.0-rc.117`.** `effect`, `@effect/platform-bun`, and `@effect/vitest` upgrade together in Renovate. `@effect/tsgo` is pinned separately; `effect:check` passes the diagnostics configuration inline with `--lspconfig` and rejects warnings with `--strict`. Floating Effects and missing `return yield*` are errors. Without this configuration the tool checks zero files; gate verification plants a floating Effect and requires the `floatingEffect` diagnostic to prevent that silent false pass.
 - **bun's default isolated linker is kept.** It turns an undeclared dependency into an immediate failure instead of a latent bug.
 - **`globalStore = true` in `bunfig.toml`.** Packages are symlinked from one machine-wide store, so a clone's `node_modules` is ~200KB instead of ~240MB. The cost is that tools resolving plugins by package name from their _own_ location break, since the store is not a parent of the project — `stryker.config.js` references its runner by path for exactly this reason.
 
@@ -51,4 +56,4 @@ quality-exceptions.json  The only place file-level gate exceptions may live.
 
 Vitest 5 changed `testNamePattern` to match against a `" > "`-joined test name; the Stryker runner still joins with a single space, so every test nested in a `describe` is skipped and every mutant is reported as survived. Upstream: [stryker-js#6210](https://github.com/stryker-mutator/stryker-js/issues/6210).
 
-The patch is pinned to exactly `10.0.0`. If Renovate bumps the runner, `patchedDependencies` stops matching and bun applies nothing — but it **fails closed**: unpatched, the score collapses to 3.33% and `thresholds.break: 100` reds the build. Remove the patch when the fix ships upstream.
+The patch is pinned to exactly `10.0.0`. If Renovate bumps the runner, `patchedDependencies` stops matching and bun applies nothing — but it **fails closed**: gate verification checks the patch is present, and `thresholds.break: 100` rejects surviving mutants. Remove the patch when the fix ships upstream.
