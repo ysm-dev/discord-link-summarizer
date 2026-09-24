@@ -16,4 +16,4 @@ paused = true
 
 [jobs.discord-link-summarizer.env]
 DISCORD_BOT_TOKEN = "SET_ON_MACHINE"
-OPENCODE_DB = "/absolute/path/to/dedicated-opencode.db"
+OPENCODE_DB = "/absolute/path/to/opencode.db"
