@@ -1,5 +1,12 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
-  "entry": ["scripts/*.ts"],
-  "ignore": [".agents/**", "scripts/**/*.mjs"]
+  "workspaces": {
+    ".": {
+      "entry": ["scripts/*.ts"],
+      "project": ["scripts/**/*.ts"]
+    },
+    "apps/summarizer": {
+      "project": ["src/**/*.ts!", "test/**/*.ts"]
+    }
+  }
 }
