@@ -1,0 +1,15 @@
+[install]
+# Symlink packages from bun's global store instead of a project-local
+# node_modules/.bun. One copy on disk shared by every project on the machine,
+# rather than ~240MB duplicated per clone of this template.
+globalStore = true
+
+# Already bun's default for workspaces, stated explicitly because the gates
+# depend on it: isolated installs turn an undeclared dependency into an
+# immediate MODULE_NOT_FOUND instead of silently resolving from the root.
+linker = "isolated"
+
+# Exact pins are policy here, not preference. oxfmt is pre-1.0 with no semver
+# protection on formatting output, and oxlint-tsgolint is hard-pinned to a
+# TypeScript patch release. Enforced at install time rather than left to review.
+exact = true

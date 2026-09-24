@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Proves the template is still green when nobody has touched it.
+    - cron: "0 6 * * 1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# contents: read is required even for least-privilege setups: on a private
+# repo, actions/checkout with a token that lacks it fails with "Repository
+# not found" rather than a permissions error, since GitHub hides private
+# repos from unauthorized tokens. ts-template itself is public, where that
+# failure mode never surfaces, since public repo data is readable regardless
+# of token scope.
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    name: Quality gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2.2.0
+      # Vitest requires Node >= 22.12 and does not support the bun runtime with
+      # the v8 coverage provider. bun installs and runs scripts; Node runs tests.
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+      # A clean checkout is always a clean tree. bun's isolated installs are not
+      # pruned incrementally, so a stale local node_modules can hide a removed
+      # dependency that fails here.
+      - run: bun install --frozen-lockfile
+      # Includes mutation testing, which runs in ~2s today. If it stops being cheap,
+      # split it into its own job: incremental on PRs, full on main and nightly.
+      - run: bun run ci

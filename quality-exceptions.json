@@ -1,0 +1,12 @@
+{
+  "coverage": [
+    {
+      "path": "apps/cli/src/index.ts",
+      "reason": "Entry shim: reads process.argv and exits. All logic lives in main.ts, which is fully covered.",
+      "added": "2026-09-20"
+    }
+  ],
+  "mutation": [],
+  "duplication": [],
+  "lint": []
+}

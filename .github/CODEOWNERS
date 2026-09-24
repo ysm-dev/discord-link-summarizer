@@ -1,0 +1,5 @@
+# The quality gates are only as strong as the list of things excused from them.
+# An agent may propose an exception; only a human can land one.
+/quality-exceptions.json  @ysm-dev
+/.github/CODEOWNERS       @ysm-dev
+/.github/workflows/       @ysm-dev

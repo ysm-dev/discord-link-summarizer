@@ -1,0 +1,29 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "rangeStrategy": "pin",
+  "prConcurrentLimit": 3,
+  "schedule": ["before 6am on monday"],
+  "packageRules": [
+    {
+      "description": "oxlint-tsgolint is hard-pinned to a TypeScript patch release (7.0.2002 means 'tsgolint patch 2 for TypeScript 7.0.2'). Bumping one without the other breaks type-aware linting.",
+      "matchPackageNames": ["typescript", "oxlint-tsgolint"],
+      "groupName": "typescript and tsgolint"
+    },
+    {
+      "description": "oxfmt is pre-1.0 with no semver protection on output, so a bump can reformat the whole repo. That diff must never be tangled with a logic change.",
+      "matchPackageNames": ["oxfmt"],
+      "groupName": "oxfmt",
+      "automerge": false
+    },
+    {
+      "description": "Eight quality gates are what make unattended merges safe.",
+      "matchUpdateTypes": ["patch", "minor"],
+      "automerge": true
+    },
+    {
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    }
+  ]
+}

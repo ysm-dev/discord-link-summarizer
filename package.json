@@ -1,0 +1,55 @@
+{
+  "name": "discord-link-summarizer",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "type": "module",
+  "scripts": {
+    "ci": "bun run format:check && bun run lint && bun run typecheck && bun run test && bun run knip && bun run dup && bun run exceptions && bun run verify-gates && bun run mutate",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "lint": "oxlint --type-aware --report-unused-disable-directives",
+    "typecheck": "turbo run typecheck && tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --coverage",
+    "knip": "knip && knip --production",
+    "dup": "jscpd",
+    "mutate": "stryker run",
+    "exceptions": "bun run scripts/exceptions.ts",
+    "verify-gates": "bun run scripts/verify-gates.ts",
+    "prepare": "husky",
+    "init": "bun run scripts/init.ts"
+  },
+  "devDependencies": {
+    "@stryker-mutator/core": "10.0.0",
+    "@stryker-mutator/vitest-runner": "10.0.0",
+    "@types/node": "26.6.2",
+    "@vitest/coverage-v8": "5.0.1",
+    "husky": "9.1.7",
+    "jscpd": "5.3.0",
+    "knip": "6.37.0",
+    "lint-staged": "16.2.7",
+    "oxfmt": "0.68.0",
+    "oxlint": "1.83.0",
+    "oxlint-plugin-complexity": "3.0.0",
+    "oxlint-tsgolint": "7.0.2002",
+    "turbo": "2.11.2",
+    "typescript": "7.0.2",
+    "vitest": "5.0.1"
+  },
+  "lint-staged": {
+    "*": "oxfmt --no-error-on-unmatched-pattern",
+    "*.{ts,tsx}": "oxlint --fix"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "bun",
+      "version": "1.4.2",
+      "onFail": "error"
+    }
+  },
+  "patchedDependencies": {
+    "@stryker-mutator/vitest-runner@10.0.0": "patches/@stryker-mutator%2Fvitest-runner@10.0.0.patch"
+  }
+}

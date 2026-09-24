@@ -1,0 +1,10 @@
+{
+  "threshold": 0,
+  "exitCode": 1,
+  "minTokens": 50,
+  "reporters": ["console"],
+  "absolute": true,
+  "gitignore": true,
+  "pattern": "{apps,packages}/*/src/**/*.ts",
+  "ignore": ["**/node_modules/**", "**/coverage/**", "**/dist/**", "fixtures/**"]
+}

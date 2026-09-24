@@ -1,0 +1,6 @@
+# oxfmt reads .gitignore and .prettierignore by default; it has no ignore file of its own.
+# Vendored agent-kit content is not this template's source and must not be reformatted.
+.agents/
+scripts/*.mjs
+skills-lock.json
+fixtures/

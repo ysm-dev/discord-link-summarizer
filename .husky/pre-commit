@@ -1,0 +1,3 @@
+# Fast feedback only. An agent that hits a slow pre-commit hook learns to pass
+# --no-verify, which is worse than having no hook. CI is the real gate.
+bunx lint-staged
