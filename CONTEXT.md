@@ -1,17 +1,81 @@
-# ts-template
+# discord-link-summarizer
 
-A TypeScript monorepo template whose purpose is to make agent-generated code safe to merge. Its subject matter is the enforcement machinery itself, so the vocabulary below is about gates and exceptions rather than any business domain. A project created from this template should replace this file with its own.
+Summarizes links posted in selected Discord channels. An OpenCode model in the `translate` workspace writes each summary, and the summarizer posts it as a thread on the message that carried the link.
 
 ## Language
 
-### Enforcement
+### Discord
+
+**Watched Channel**:
+A Discord text or announcement channel listed in the Summarizer's config.
+_Avoid_: subscription, feed, monitored channel. A wachi "channel" is a named group of feed subscriptions, not a Discord channel.
+
+**Link Post**:
+A top-level message in a Watched Channel that contains a Link, posted by anyone except the Summarizer. wachi's own alerts are not Link Posts.
+_Avoid_: item, entry, feed item
+
+**Link**:
+The first URL in a Link Post's text, taken exactly as posted. It is what a Summary is about.
+_Avoid_: article, source
+
+**Summary Thread**:
+The public thread the Summarizer starts from a Link Post to hold its Summary.
+_Avoid_: reply, comment thread
+
+**Summarizer**:
+This tool, together with the dedicated Discord bot it posts as. A thread belongs to the Summarizer only if that bot started it.
+_Avoid_: bot (pany is also a bot), agent (an OpenCode term)
+
+### Lifecycle
+
+**Pending**:
+A Link Post that counts (after its channel's Since and within the Horizon) and has no Summary Thread yet.
+_Avoid_: new, queued, unprocessed
+
+**In progress**:
+A Link Post whose Summary Thread exists but doesn't hold a complete Summary yet. This includes the waits between Attempts.
+_Avoid_: claimed, locked, running
+
+**Done**:
+A Link Post whose Summary Thread holds its complete Summary.
+_Avoid_: summarized, completed, processed
+
+**Given up**:
+A Link Post whose third Attempt failed. It is never retried automatically; deleting its Summary Thread makes it Pending again.
+_Avoid_: failed (an Attempt fails; a Link Post is given up), dead, abandoned
+
+**Attempt**:
+One try at summarizing a Link Post. It fails when OpenCode errors, runs out of time, or writes nothing. Problems that aren't the Link's fault don't count.
+_Avoid_: try, retry
+
+### Summarizing
+
+**Summary**:
+The text the model writes about one Link. It is the only thing the model produces.
+_Avoid_: digest, TL;DR (a TL;DR is one section of a Summary)
+
+### Operation
+
+**Run**:
+One invocation of the Summarizer by the scheduler. It starts with no memory and works out all progress from Discord.
+_Avoid_: job (the crnd schedule entry), check (wachi's word), tick
+
+**Horizon**:
+How far back every Run re-checks a Watched Channel, and how far back a newly added channel is summarized. After a longer outage, Runs read further back until they reach work the Summarizer already did.
+_Avoid_: lookback, window, retention
+
+**Since**:
+The moment from which a Watched Channel's Link Posts count. Older Link Posts are never summarized. One value applies to every Watched Channel unless a channel sets its own.
+_Avoid_: start point, baseline (wachi's word), cutoff
+
+### Quality enforcement (inherited from ts-template)
 
 **Gate**:
-A single automated check that blocks a merge when it fails. There are eight, listed in `README.md`.
+A single automated check that blocks a merge when it fails. The gates are listed in `README.md`.
 _Avoid_: rule, check, lint (a lint rule is one implementation of a gate, not a synonym)
 
 **Silent false pass**:
-A gate that exits 0 while enforcing nothing, usually because its inputs failed to resolve. The failure mode this template is designed around, and the reason `verify-gates` exists.
+A gate that exits 0 while enforcing nothing, usually because its inputs failed to resolve. The failure mode the template is designed around, and the reason `verify-gates` exists.
 _Avoid_: false negative, silent failure
 
 **Exception**:
@@ -22,14 +86,12 @@ _Avoid_: ignore, suppression, disable, override, waiver
 Where a gate runs: pre-commit, pre-push, or CI. Tiers exist because gates differ by orders of magnitude in cost, not because they differ in importance.
 _Avoid_: stage, level, phase
 
-### Structure
-
 **Archetype**:
 One of the two shapes a workspace package may take. A **library** lives in `packages/` and is consumed by other workspace packages; an **application** lives in `apps/` and is the thing that runs.
 _Avoid_: kind, category, template (overloaded here), project
 
 **Just-in-Time package**:
-A workspace package whose `exports` points at TypeScript source, with no build step and no emitted `dist/`. The only package shape this template supports.
+A workspace package whose `exports` points at TypeScript source, with no build step and no emitted `dist/`. The only package shape this repo supports.
 _Avoid_: source package, unbuilt package, internal package
 
 **Trust boundary**:
