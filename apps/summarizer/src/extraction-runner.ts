@@ -51,9 +51,9 @@ export function runExtraction(kind: ExtractionKind, url: string, directory: stri
     Effect.mapError((error) =>
       error instanceof ExtractionFailure ? error : new ExtractionFailure("Extraction failed"),
     ),
-    Effect.timeout(TIMEOUT),
-    Effect.catchTag("TimeoutError", () =>
-      Effect.fail(new ExtractionFailure("Extraction timed out")),
-    ),
+    Effect.timeoutOrElse({
+      duration: TIMEOUT,
+      orElse: () => Effect.fail(new ExtractionFailure("Extraction timed out")),
+    }),
   );
 }
