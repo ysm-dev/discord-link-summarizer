@@ -29,7 +29,7 @@ _Avoid_: bot (pany is also a bot), agent (an OpenCode term)
 ### Lifecycle
 
 **Pending**:
-A Link Post that counts (after its channel's Since and within the Horizon) and has no Summary Thread yet.
+A Link Post within the channel's eligible history that has no Summary Thread yet. Eligible history includes unfinished catch-up beyond the Horizon.
 _Avoid_: new, queued, unprocessed
 
 **In progress**:
@@ -41,7 +41,7 @@ A Link Post whose Summary Thread holds its complete Summary.
 _Avoid_: summarized, completed, processed
 
 **Given up**:
-A Link Post whose third Attempt failed. It is never retried automatically; deleting its Summary Thread makes it Pending again.
+A Link Post whose last allowed Attempt failed (the third by default). It is never retried automatically; deleting its Summary Thread makes it Pending again when the Link Post is rediscovered.
 _Avoid_: failed (an Attempt fails; a Link Post is given up), dead, abandoned
 
 **Attempt**:
@@ -61,8 +61,16 @@ One invocation of the Summarizer by the scheduler. It starts with no memory and 
 _Avoid_: job (the crnd schedule entry), check (wachi's word), tick
 
 **Horizon**:
-How far back every Run re-checks a Watched Channel, and how far back a newly added channel is summarized. After a longer outage, Runs read further back until they reach work the Summarizer already did.
+How far back recent history is re-checked and how far back a newly added channel may initially be summarized. It does not discard unfinished catch-up.
 _Avoid_: lookback, window, retention
+
+**Channel Record**:
+The Summarizer's durable record of a Watched Channel's onboarding and discovery progress. It distinguishes previously covered history from work still requiring discovery.
+_Avoid_: recent-thread heuristic, local ledger
+
+**Onboarding Floor**:
+The earliest moment admitted when a Watched Channel is first activated. It preserves the initial backfill boundary across later Runs and outages.
+_Avoid_: activation timestamp, moving Horizon
 
 **Since**:
 The moment from which a Watched Channel's Link Posts count. Older Link Posts are never summarized. One value applies to every Watched Channel unless a channel sets its own.

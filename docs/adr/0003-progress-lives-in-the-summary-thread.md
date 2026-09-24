@@ -1,5 +1,8 @@
 # Progress lives in the Summary Thread
 
+ADR-0007 supersedes the overlapping-Run claim and adds durable Channel Records.
+Thread creation alone does not lock an existing retry thread.
+
 Each Link Post's progress is recorded in its Summary Thread. Because of ADR-0001 it can't live in a database, and the thread is the only other place readers already look.
 
 When the first Attempt begins, the Summarizer starts the thread with a ⏳ at the front of its name and the longest auto-archive setting (1 week). Discord allows one thread per message, so starting the thread also acts as the lock.

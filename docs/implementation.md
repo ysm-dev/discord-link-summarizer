@@ -9,7 +9,8 @@ lands on one PR branch; ticket branches merge when their dependencies are presen
 #2 Effect application and quality gates
  ├── #3 Config and pure lifecycle rules ──────┐
  ├── #4 Discord HTTP client ─────────────────┼── #6 Runs and Attempts
- ├── #5 Private OpenCode server and sessions ┘
+ ├── #5 Private OpenCode server and sessions
+ │    └── #9 Shared terminal-session publication ┘
  └── #7 Deployment and recovery runbook
 ```
 
@@ -19,3 +20,14 @@ existing quality gates.
 
 Bot creation, channel selection, installing the translate agent, and enabling the
 crnd job are the human rollout steps listed in the specification.
+
+## Approved corrections
+
+Implementation research exposed contradictions in the original protocol. The
+operator approved one-machine Run exclusion, durable channel-level progress in
+Discord, `Manage Threads`, and structured extraction tools instead of generic
+shell access. See ADR-0007 and ADR-0009.
+
+The operator requires shared session visibility and prohibits upstream changes.
+ADR-0008 preserves completed-session visibility using OpenCode's existing
+export/import API, without sharing active execution claims.
