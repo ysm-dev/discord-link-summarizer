@@ -11,8 +11,8 @@ Thread does not prove older history is complete: a later successful Attempt can
 hide an earlier unclaimed gap. Records preserve the Onboarding Floor and discovery
 progress; progress must not advance past work that has not been durably accounted
 for. Recovery includes archived In-progress threads, including those before a
-later Since. The concrete record and pagination protocol belongs in the Run
-implementation specification.
+later Since. The concrete record and pagination protocol is in
+[`../recovery-protocol.md`](../recovery-protocol.md).
 
 This supersedes the ownership and discovery heuristics in ADR-0003 and ADR-0004.
 Discord remains the only record of Summarizer progress (ADR-0001). The operator

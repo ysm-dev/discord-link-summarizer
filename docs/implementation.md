@@ -8,7 +8,8 @@ lands on one PR branch; ticket branches merge when their dependencies are presen
 ```text
 #2 Effect application and quality gates
  ├── #3 Config and pure lifecycle rules ──────┐
- ├── #4 Discord HTTP client ─────────────────┼── #6 Runs and Attempts
+ ├── #4 Discord HTTP client ─────────────────┼── #10 Channel Records and lock
+ │                                          │       └── #6 Runs and Attempts
  ├── #5 Private OpenCode server and sessions
  │    └── #9 Shared terminal-session publication ┘
  └── #7 Deployment and recovery runbook
@@ -31,3 +32,6 @@ shell access. See ADR-0007 and ADR-0009.
 The operator requires shared session visibility and prohibits upstream changes.
 ADR-0008 preserves completed-session visibility using OpenCode's existing
 export/import API, without sharing active execution claims.
+
+The durable discovery and publication handoff is specified in
+[`recovery-protocol.md`](./recovery-protocol.md).
