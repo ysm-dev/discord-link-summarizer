@@ -6,6 +6,7 @@ const minimal = `opencode:
   directory: ~/translate
   agent: summarizer
 since: 2026-09-25T00:00:00+09:00
+state_channel_id: '999'
 channels:
   - id: '123'
     label: Feed
@@ -15,6 +16,7 @@ it.effect("decodes defaults, channel overrides, timezone offsets and attempt cap
   Effect.gen(function* () {
     const defaults = yield* decodeConfig(minimal, "/Users/me");
     expect(defaults.opencode).toEqual({ directory: "/Users/me/translate", agent: "summarizer" });
+    expect(defaults.stateChannelId).toBe("999");
     expect(DateTime.toEpochMillis(defaults.since)).toBe(Date.parse("2026-09-24T15:00:00Z"));
     expect(defaults.command).toBe("summarize");
     expect(Duration.toMillis(defaults.horizon)).toBe(7 * 86400000);
@@ -74,6 +76,12 @@ it.effect(
         minimal.replace("channels:", "retry_waits: [0 minutes]\nchannels:"),
         minimal.replace("channels:", "concurrency: 0\nchannels:"),
         minimal.replace("channels:", "concurrency: 1.5\nchannels:"),
+        minimal.replace("state_channel_id: '999'\n", ""),
+        minimal.replace("state_channel_id: '999'", "state_channel_id: '123'"),
+        minimal.replace("state_channel_id: '999'", "state_channel_id: 'xyz'"),
+        minimal.replace("state_channel_id: '999'", "state_channel_id: 'x999'"),
+        minimal.replace("state_channel_id: '999'", "state_channel_id: '999x'"),
+        minimal.replace("id: '123'", "id: 'abc'"),
         minimal + "  - id: '123'\n    label: Duplicate\n",
       ]) {
         expect(yield* Effect.exit(decodeConfig(text, "/Users/me"))).toMatchObject({
@@ -92,6 +100,24 @@ it.effect(
           ),
         ),
       ).toMatchObject({ _tag: "ConfigError", message: "Duplicate channel ID" });
+      for (const text of [
+        minimal.replace("state_channel_id: '999'", "state_channel_id: '123'"),
+        minimal.replace("state_channel_id: '999'", "state_channel_id: '456'") +
+          "  - id: '456'\n    label: Second\n",
+      ]) {
+        expect(yield* Effect.flip(decodeConfig(text, "/Users/me"))).toMatchObject({
+          _tag: "ConfigError",
+          message: "State channel must be distinct from Watched Channels",
+        });
+      }
+      expect(
+        (yield* Effect.flip(
+          decodeConfig(
+            minimal.replace("state_channel_id: '999'", "state_channel_id: 'x999'"),
+            "/Users/me",
+          ),
+        )).message,
+      ).toContain("decimal Snowflake");
       const multiple = yield* decodeConfig(
         minimal + "  - id: '456'\n    label: Second\n",
         "/Users/me",
