@@ -39,6 +39,8 @@ interface FakeOptions {
   readonly noAgent?: boolean;
   readonly hangAgent?: boolean;
   readonly hangCommand?: boolean;
+  readonly slowList?: boolean | undefined;
+  readonly hangExport?: boolean | undefined;
   readonly noConnected?: boolean;
   readonly closeEvent?: boolean;
   readonly noEvent?: boolean;
@@ -52,6 +54,7 @@ interface FakeOptions {
   readonly pages?: ReadonlyArray<ReadonlyArray<object>>;
   readonly loop?: boolean;
   readonly payloads?: Partial<Record<NonNullable<FakeOptions["fault"]>, object>>;
+  readonly exports?: Readonly<Record<string, object>>;
 }
 
 class FakeServer {
@@ -137,11 +140,17 @@ class FakeServer {
       url.searchParams.get("limit") !== "100"
     )
       throw new Error("Wrong session pagination query");
-    const index = url.searchParams.has("cursor") ? 1 : 0;
+    const index = url.searchParams.has("cursor")
+      ? Number(url.searchParams.get("cursor")?.slice(4)) - 1
+      : 0;
     return this.answer(request, "list", {
       data: this.config.pages?.[index] ?? [],
       cursor: {
-        next: this.config.loop || (index === 0 && this.config.pages?.[1]) ? "page2" : null,
+        next: this.config.loop
+          ? "page2"
+          : this.config.pages?.[index + 1]
+            ? `page${index + 2}`
+            : null,
       },
     });
   }
@@ -174,6 +183,15 @@ class FakeServer {
     return this.messages(request);
   }
 
+  private export(request: HttpClientRequest.HttpClientRequest, url: URL) {
+    if (url.searchParams.get("sanitize") !== "false") throw new Error("Export must be raw");
+    const id = url.pathname.split("/")[4] ?? "";
+    return HttpClientResponse.fromWeb(
+      request,
+      Response.json({ data: this.config.exports?.[id] ?? {} }),
+    );
+  }
+
   readonly http = HttpClient.make((request, url) => {
     this.requests.push(`${request.method} ${url.pathname}${url.search}`);
     if (request.headers["authorization"] !== `Basic ${btoa("opencode:secret")}`)
@@ -182,6 +200,10 @@ class FakeServer {
       this.bodies.push(request.body.text);
     if (url.pathname === "/api/agent" && this.config.hangAgent) return Effect.never;
     if (url.pathname.endsWith("/command") && this.config.hangCommand) return Effect.never;
+    if (url.pathname === "/api/session" && this.config.slowList && request.method === "GET")
+      return Effect.sync(() => this.sessions(request, url)).pipe(Effect.delay("12 seconds"));
+    if (url.pathname.startsWith("/api/experimental/session/") && this.config.hangExport)
+      return Effect.never;
     return Effect.sync(() => {
       if (url.pathname === "/api/agent") return this.agent(request, url);
       if (url.pathname === "/api/command") {
@@ -193,6 +215,7 @@ class FakeServer {
       }
       if (url.pathname === "/api/session") return this.sessions(request, url);
       if (url.pathname === "/api/event") return this.event(request);
+      if (url.pathname.startsWith("/api/experimental/session/")) return this.export(request, url);
       if (!url.pathname.startsWith("/api/session/ses_")) throw new Error("Wrong session endpoint");
       if (request.method === "DELETE")
         return this.config.fault === "delete"
