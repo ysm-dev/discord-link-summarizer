@@ -23,6 +23,71 @@ quality-exceptions.json  The only place file-level gate exceptions may live.
 The entry shim provides `BunServices.layer` and runs `main` with `BunRuntime.runMain`.
 Until Run integration lands, `bun apps/summarizer/src/index.ts` exits non-zero with an explicit message.
 
+## Deployment and recovery
+
+**Rollout remains paused pending Run integration.** The accepted design is a one-machine OS lock and durable [Channel Records](https://github.com/ysm-dev/discord-link-summarizer/blob/feat/issue-1-summarizer/docs/recovery-protocol.md) in a dedicated Discord state channel. [ADR-0008](https://github.com/ysm-dev/discord-link-summarizer/blob/feat/issue-1-summarizer/docs/adr/0008-isolated-execution-shared-terminal-transcripts.md) resolves session ownership: private executions use a separate persistent DB and independently provisioned credentials; terminal transcripts are exported and imported into the already-running interactive service at the translate location for eventual visibility. Active private sessions do not appear in the interactive list. Publication is implemented by #9; this branch does not enable it. The old `shell` glob allowlist is unsafe and must never be installed.
+
+The committed `config.yml` has no Watched Channels and uses the invalid `state_channel_id: null` placeholder; it fails closed until a human replaces it with a **quoted** Discord text-channel ID. Create a **dedicated** state channel distinct from every Watched Channel and preserve its Channel Records/journals through recovery. Set `since` to the intended rollout instant with an explicit timezone offset; add one Watched Channel first, then expand only after checking its dry run and results. For example:
+
+```yaml
+channels:
+  - id: "123456789012345678"
+    label: test-channel
+    since: "2026-09-25T09:00:00+09:00"
+```
+
+Keep IDs quoted, replace the example ID/time with the real channel and activation instant, and commit/push the token-free config for recovery. `opencode.directory` must point to the installed translate checkout. Optional config settings and defaults are in [#1](https://github.com/ysm-dev/discord-link-summarizer/issues/1): `command: summarize`, `horizon: 7 days`, `concurrency: 10`, `summary_timeout: 10 minutes`, `run_budget: 20 minutes`, `retry_waits: [10 minutes, 1 hour]`, and `delete_sessions: false`. A per-channel `since` or `command` overrides the global setting.
+
+### Bot and translate setup (human)
+
+1. In the Discord Developer Portal, create a **dedicated** Summarizer application/bot (never reuse wachi's or pany's token). Enable the privileged **Message Content** intent. Invite with the `bot` scope and grant View Channel, Read Message History, Create Public Threads, Send Messages in Threads, **and Manage Threads** in the chosen text/announcement Watched Channels. In the separate **text** state channel, additionally grant **Send Messages** so it can create record messages; verify effective permissions and channel overrides. Manage Threads is needed for rename/archive. Keep the token outside Git.
+2. Install translate and leave its `/summarize` command and both extraction scripts unchanged. The installable V2 artifacts are `extraction-agent.md` and `apps/summarizer/src/extraction-{plugin,runner,url}.ts`. On the human-managed translate checkout, copy the agent to `.opencode/agents/summarizer.md`; copy the three TypeScript files into `.opencode/plugins/summarizer-extraction/`, renaming `extraction-plugin.ts` to `index.ts` and keeping the two helper filenames. This **directory** is discovered as one plugin; putting all three files directly under `.opencode/plugins/` would try to load the helpers as plugins. Ensure translate's `.opencode` package resolves exactly `@opencode/plugin@2.0.15`, `effect@4.0.0-rc.117` and `@effect/platform-bun@4.0.0-rc.117` (install them there if missing). The first matches the verified OpenCode v2.0.15 plugin API; the Effect packages are the testable scoped process runtime. The runner's fixed Bun path `/Users/chris/.bun/bin/bun` must exist on that host. The plugin reads its scripts from the active translate Location's `scripts/` directory; verify the actual agent registry lists `summarizer`, its model/variant and the two tools before enabling. Copy and commit these files **in translate** as a human rollout step; this repo does not edit translate.
+3. The agent denies all actions then allows only file reads (except `.env`), web fetch/search and the two direct extraction tools. In V2, denying `execute` disables Code Mode, so the plugin registers its tools with `codemode: false`; `shell`, `edit`, `subagent`, `execute`, MCP and other plugin actions remain denied. Its validators reject IP literals, localhost/internal names, credentials, custom ports, malformed URLs and non-YouTube URLs for captions. The URL is passed as a single argv argument to a fixed Bun script, with no shell, a 3-minute Effect deadline and 200 KB output limit. Effect's Bun/Node-shared ChildProcessSpawner supports detached process-group cleanup on scope interruption with bounded SIGTERM→SIGKILL escalation (`forceKillAfter: 1500 millis`); the native V2 tool executor is the only Promise bridge. Untrusted pages may redirect or DNS-rebind; if network access to internal services must be prohibited, enforce egress at the host/network boundary too. Test the real private server's agent and tools without changing translate's command. **Do not use the shell-glob agent from #1.**
+4. Set `OPENCODE_DB` to a private, persistent **isolated** database path, not the interactive service's DB. With an interactive terminal, provision its own provider login (for example `OPENCODE_DB=/secure/path/summarizer.db opencode auth login opencode-go --standalone`) or a verified supported environment connection; never copy live SQLite credentials or OAuth secrets. This setup is separate from the interactive service. #9 publishes only **terminal** sessions via the V2 export/import API after discovering the healthy already-running managed service; an absent service defers publication and retains the private transcript, without restarting/starting it. `delete_sessions: true` opts out of retention and publication. Verify eventual visibility in translate's interactive list before enabling the job. See ADR-0008 for the transfer, retry and 409 reconciliation protocol.
+
+### Run and schedule (human, after blockers are resolved)
+
+`DISCORD_BOT_TOKEN` and `OPENCODE_DB` must be set in the Run environment; never put the token in `config.yml` or this repo. From the installed checkout, after securely loading those environment values:
+
+```sh
+bun apps/summarizer/src/index.ts --config ./config.yml --dry-run
+bun apps/summarizer/src/index.ts --config ./config.yml
+```
+
+The default config path without `--config` is `~/.config/discord-link-summarizer/config.yml`. Dry run reads Channel Records and reports each channel's effective start, partial discovery, and Pending/In-progress/Given-up counts without writes or OpenCode startup. Inspect results for one test channel before adding more. The second command performs a real Run; use it only after the Run integration is ready. The approved single-machine lock uses Bun's retained descriptor with macOS `lockf -t 0 3` on one stable private lock file, including manual and dry Runs; `overlap_policy = "skip"` protects only ticks of the **same local crnd job**. Do not replace/unlink the lock file or run a second machine; see the recovery protocol.
+
+The checked-in `crnd-job.toml` is a **paused fragment**, not a complete export. crnd **v0.2.5** `import -f` synchronizes the _entire_ job set and deletes every absent job, including `wachi-check`. To preserve wachi and all other jobs:
+
+1. On the target machine, create a private directory (`umask 077`) outside the repo. Run `crnd export -o /private/path/jobs.toml` and keep an untouched, private copy of that full export as a rollback snapshot; exports can contain existing job secrets. Record `crnd list` and check wachi's `crnd show -n wachi-check` before changes. Never commit or print the export.
+2. In a **working copy of the full export**, append the fragment after a blank line:
+
+   ```sh
+   cp /private/path/jobs.toml /private/path/merged-jobs.toml
+   printf '\n' >> /private/path/merged-jobs.toml
+   cat crnd-job.toml >> /private/path/merged-jobs.toml
+   ```
+
+   Ensure the result still contains **every** exported `[jobs.<name>]` and its nested env/settings; do not replace, redact or re-create wachi's job. Edit only the new job's absolute Bun/checkout paths, `cwd`, isolated `OPENCODE_DB` path and `DISCORD_BOT_TOKEN` placeholder. Supply the real token privately in this copy. Keep `paused = true` and permissions restrictive; do not commit this merged file.
+
+3. Validate the merged TOML and compare it to the snapshot: every original job and its settings must be preserved, plus exactly the new paused job. For example, Python 3.11+ can check this without contacting crnd:
+
+   ```sh
+   python3 - /private/path/jobs.toml /private/path/merged-jobs.toml <<'PY'
+   import sys, tomllib
+   with open(sys.argv[1], 'rb') as original, open(sys.argv[2], 'rb') as merged:
+       before, after = tomllib.load(original)['jobs'], tomllib.load(merged)['jobs']
+   assert set(after) == set(before) | {'discord-link-summarizer'}
+   assert all(after[name] == job for name, job in before.items())
+   assert after['discord-link-summarizer']['paused'] is True
+   PY
+   ```
+
+   Run `crnd import -f /private/path/merged-jobs.toml` **only on this complete file**, then check `crnd list`, `crnd show -n wachi-check` and `crnd show -n discord-link-summarizer`. If anything differs unexpectedly, restore with `crnd import -f /private/path/jobs.toml` and investigate. `crnd import -f crnd-job.toml` would delete wachi.
+
+4. Once the agent, private login and terminal-session publication, OS lock, Channel Records, Run behavior and test channel are verified, enable with `crnd resume -n discord-link-summarizer`. Inspect `crnd runs -n discord-link-summarizer` and `crnd logs -n discord-link-summarizer --show` for failures; pause with `crnd pause -n discord-link-summarizer` before troubleshooting. The one-minute schedule skips overlapping ticks; the 35-minute crnd timeout is only a backstop for the Run's own deadline. Do not enable until those implementations land.
+
+After machine loss, clone this repo and translate; restore/provision Bun, crnd, wachi's job and the dedicated bot token. Restore the persistent **private** OpenCode DB or enroll its provider again, install the translate agent/plugin, and set checkout paths, `state_channel_id` and Since in `config.yml` and the paused job fragment. Preserve the Discord state channel: deleting both a Channel Record and journal loses the onboarding floor. Re-export the target scheduler's full job set (including wachi), merge the fragment and verify it as above; never import the fragment alone. Run `--dry-run`, verify permissions and that partial discovery is identified, then verify one test channel and terminal transcript publication to the interactive translate list before resuming. The private DB is not the Discord progress record; if the interactive service is unavailable, terminal transcripts stay private and are retried on a later Run. Check `crnd runs`/`crnd logs` and the recovery protocol before declaring the backlog clear.
+
 ## The gates
 
 | Gate                  | Threshold      | Command                |
