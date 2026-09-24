@@ -42,10 +42,11 @@ export const hundredLinks = (fake: FakeDiscord) =>
     { length: 100 },
     (_, index) => fake.addMessage("10", `https://example.test/${index}`, now - 1000 + index).id,
   );
-export const twoLinks = (fake: FakeDiscord) => [
-  fake.addMessage("10", "https://one.test", now - 100),
-  fake.addMessage("10", "https://two.test", now - 50),
-];
+export const twoLinks = (fake: FakeDiscord) =>
+  [
+    fake.addMessage("10", "https://one.test", now - 100),
+    fake.addMessage("10", "https://two.test", now - 50),
+  ] as const;
 export const loseJournalReply = (fake: FakeDiscord, thread: string, after: boolean) => {
   fake.faults.push({ method: "POST", path: `/channels/${thread}/messages`, drop: true, after });
 };

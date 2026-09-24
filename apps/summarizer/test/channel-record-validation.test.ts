@@ -224,6 +224,8 @@ it.effect(
         { ...journal.record, phase: "scan", high: null, before: "1" },
         { ...journal.record, phase: "scan", high: "1", before: null },
         { ...journal.record, phase: "work", high: null, before: "1" },
+        { ...journal.record, since: "not-a-date" },
+        { ...journal.record, since: "2026-09-15" },
         { ...journal.record, unknown: true },
       ];
       for (const value of variants) {
@@ -240,6 +242,10 @@ it.effect(
         expect(yield* Effect.exit(indexRecords(api, "20", "bot"))).toMatchObject({
           _tag: "Failure",
         });
+        if (value.since === "not-a-date")
+          expect((yield* Effect.flip(indexRecords(api, "20", "bot"))).message).toContain(
+            "invalid Since",
+          );
       }
       fake.messages.set(
         "20",
@@ -315,11 +321,25 @@ it.effect(
         { id: source.id, state: "terminal", count: 1 },
         { id: source.id, state: "terminal", hash: h },
         { id: source.id, state: "terminal", parts: ["1"] },
+        { id: source.id, state: "terminal", first: "1" },
+        { id: source.id, state: "terminal", chunks: 1 },
+        { id: source.id, state: "ready", count: 1, hash: h, parts: ["1"], first: "1" },
+        { id: source.id, state: "ready", count: 1, hash: h, parts: ["1"], chunks: 1 },
       ];
       for (const status of cases) {
         fake.messages.set(journal.parent, base);
         fake.addMessage(journal.parent, `DLS1 status ${JSON.stringify(status)}`, now + 1, "bot");
         expect(yield* Effect.exit(open(api))).toMatchObject({ _tag: "Failure" });
+      }
+      for (const status of [
+        { id: source.id, state: "terminal" as const, chunks: 1 },
+        { id: source.id, state: "ready" as const, count: 1, hash: h, parts: ["1"], chunks: 1 },
+      ]) {
+        fake.messages.set(journal.parent, base);
+        expect(
+          (yield* Effect.flip(journalStatus(api, "20", "bot", journal, status))).message,
+        ).toContain("Invalid journal transition");
+        expect(fake.messages.get(journal.parent)).toEqual(base);
       }
       fake.messages.set(journal.parent, base);
       fake.addMessage(

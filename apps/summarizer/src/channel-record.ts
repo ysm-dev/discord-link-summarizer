@@ -7,11 +7,19 @@ import { normalLowerBound } from "./window.ts";
 const snowflake = Schema.String.check(
   Schema.makeFilter((s) => (/^(?:0|[1-9]\d*)$/.test(s) ? undefined : "invalid Snowflake")),
 );
+const canonicalSince = Schema.String.check(
+  Schema.makeFilter((s) => {
+    const parsed = Date.parse(s);
+    return Number.isFinite(parsed) && new Date(parsed).toISOString() === s
+      ? undefined
+      : "invalid Since";
+  }),
+);
 const recordSchema = Schema.Struct({
   channel: snowflake,
   onboarding: snowflake,
   floor: snowflake,
-  since: Schema.String,
+  since: canonicalSince,
   high: Schema.NullOr(snowflake),
   before: Schema.NullOr(snowflake),
   phase: Schema.Literals(["idle", "scan", "work"]),
@@ -23,6 +31,15 @@ const statusSchema = Schema.Struct({
   count: Schema.optionalKey(Schema.Finite),
   hash: Schema.optionalKey(Schema.String),
   parts: Schema.optionalKey(Schema.Array(snowflake)),
+  first: Schema.optionalKey(snowflake),
+  chunks: Schema.optionalKey(Schema.Finite),
+});
+const partsSchema = Schema.Struct({
+  id: snowflake,
+  hash: Schema.String,
+  first: snowflake,
+  index: Schema.Finite,
+  ids: Schema.Array(snowflake),
 });
 export type ChannelRecord = Schema.Schema.Type<typeof recordSchema>;
 export type Status = Schema.Schema.Type<typeof statusSchema>;
@@ -61,19 +78,55 @@ const validStatus = (status: Status) =>
     ? Number.isSafeInteger(status.count) &&
       Number(status.count) > 0 &&
       new Set(status.parts).size === status.count &&
-      /^[a-f0-9]{64}$/.test(String(status.hash))
-    : status.count === undefined && status.hash === undefined && status.parts === undefined;
+      /^[a-f0-9]{64}$/.test(String(status.hash)) &&
+      status.first === undefined &&
+      status.chunks === undefined
+    : status.count === undefined &&
+      status.hash === undefined &&
+      status.parts === undefined &&
+      status.first === undefined &&
+      status.chunks === undefined;
 const transition = (old: Status | undefined, next: Status) =>
   !old ||
   same(old, next) ||
   next.state === "pending" ||
   old.state === "pending" ||
   next.state === "terminal";
+const readPart = (content: string, fragments: Map<string, readonly string[]>) =>
+  Effect.gen(function* () {
+    const part = yield* parse(partsSchema, content, "parts");
+    if (!Number.isSafeInteger(part.index) || part.index < 0 || part.ids.length === 0)
+      return yield* fail("Malformed READY parts");
+    const key = `${part.id}/${part.hash}/${part.first}/${part.index}`;
+    const previous = fragments.get(key);
+    if (previous && !same(previous, part.ids)) return yield* fail("Divergent READY parts");
+    fragments.set(key, part.ids);
+    return void 0;
+  });
+const hydrateStatus = (stored: Status, fragments: ReadonlyMap<string, readonly string[]>) =>
+  Effect.gen(function* () {
+    if (stored.chunks === undefined) return stored;
+    const { first, chunks: chunkCount, ...manifest } = stored;
+    if (
+      stored.state !== "ready" ||
+      stored.parts !== undefined ||
+      first === undefined ||
+      !Number.isSafeInteger(chunkCount) ||
+      chunkCount < 1
+    )
+      return yield* fail("Malformed READY manifest");
+    const chunks = Array.from({ length: chunkCount }, (_, index) =>
+      fragments.get(`${stored.id}/${stored.hash}/${first}/${index}`),
+    );
+    if (chunks.some((chunk) => chunk === undefined)) return yield* fail("Missing READY parts");
+    return { ...manifest, parts: chunks.flatMap((chunk) => chunk!) } satisfies Status;
+  });
 const recordJournalMessage = (
   message: DiscordMessage,
   botId: string,
   pages: Map<string, readonly string[]>,
   states: Map<string, Status>,
+  fragments: Map<string, readonly string[]>,
 ) =>
   Effect.gen(function* () {
     if (message.type !== 0) return void 0;
@@ -85,8 +138,14 @@ const recordJournalMessage = (
       pages.set(batch.key, batch.ids);
       return void 0;
     }
+    if (message.content.startsWith("DLS1 parts ")) {
+      return yield* readPart(message.content, fragments);
+    }
     if (!message.content.startsWith("DLS1 status ")) return yield* fail("Malformed journal entry");
-    const status = yield* parse(statusSchema, message.content, "status");
+    const status = yield* hydrateStatus(
+      yield* parse(statusSchema, message.content, "status"),
+      fragments,
+    );
     if (!validStatus(status)) return yield* fail("Malformed status manifest");
     if (!transition(states.get(status.id), status)) return yield* fail("Divergent journal status");
     states.set(status.id, status);
@@ -97,8 +156,9 @@ const readEntries = (messages: readonly DiscordMessage[], botId: string) =>
   Effect.gen(function* () {
     const pages = new Map<string, readonly string[]>();
     const states = new Map<string, Status>();
+    const fragments = new Map<string, readonly string[]>();
     for (const message of messages.toReversed())
-      yield* recordJournalMessage(message, botId, pages, states);
+      yield* recordJournalMessage(message, botId, pages, states, fragments);
     const entries = new Map<string, Status | undefined>();
     for (const ids of pages.values()) for (const source of ids) entries.set(source, undefined);
     for (const [source, status] of states) {
@@ -319,6 +379,44 @@ export const persistReady = (
     return yield* journalStatus(api, stateId, botId, journal, status);
   });
 
+const writeReadyChunks = (api: DiscordApi, botId: string, journal: Journal, status: Status) =>
+  Effect.gen(function* () {
+    const chunks: string[][] = [];
+    const first = status.parts![0]!;
+    for (const id of status.parts!) {
+      const last = chunks.at(-1);
+      if (
+        last &&
+        encode("parts", {
+          id: status.id,
+          hash: status.hash!,
+          first,
+          index: chunks.indexOf(last),
+          ids: [...last, id],
+        }).length <= 2000
+      )
+        last.push(id);
+      else chunks.push([id]);
+    }
+    for (const [index, ids] of chunks.entries()) {
+      const fragment = encode("parts", { id: status.id, hash: status.hash, first, index, ids });
+      if (fragment.length > 2000) return yield* fail("READY part ID too long");
+      yield* writeOnce(api, journal.parent, botId, fragment, (text) =>
+        text.startsWith(
+          `DLS1 parts {"id":"${status.id}","hash":"${status.hash}","first":"${first}","index":${index},`,
+        ),
+      );
+    }
+    return encode("status", {
+      id: status.id,
+      state: status.state,
+      count: status.count,
+      hash: status.hash,
+      first,
+      chunks: chunks.length,
+    });
+  });
+
 export const journalStatus = (
   api: DiscordApi,
   stateId: string,
@@ -331,7 +429,11 @@ export const journalStatus = (
     const old = journal.entries.get(status.id);
     if (!validStatus(status) || !transition(old, status))
       return yield* fail("Invalid journal transition");
-    const content = encode("status", status);
+    let content = encode("status", status);
+    if (content.length > 2000 && status.state === "ready") {
+      content = yield* writeReadyChunks(api, botId, journal, status);
+    }
+    if (content.length > 2000) return yield* fail("READY manifest too long");
     yield* writeOnce(api, journal.parent, botId, content, (text) => text === content);
     const confirmed = yield* readJournal(api, stateId, botId, journal.parent, journal.record);
     if (!same(confirmed.entries.get(status.id) ?? {}, status))
