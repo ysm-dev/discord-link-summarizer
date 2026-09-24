@@ -26,10 +26,18 @@ export interface OpenCodeAttempt {
   readonly command: string;
 }
 
-export type OpenCodeResult =
+type OpenCodeOutcome =
   | { readonly type: "succeeded"; readonly text: string }
   | { readonly type: "failed"; readonly reason: string }
   | { readonly type: "interrupted" };
+export type OpenCodeResult = OpenCodeOutcome & { readonly sessionID: string };
+
+export const canonicalJson = (value: Schema.Json): string =>
+  JSON.stringify(value, (_key, item: Schema.Json) =>
+    item && !Array.isArray(item) && typeof item === "object"
+      ? Object.fromEntries(Object.entries(item).toSorted(([a], [b]) => a.localeCompare(b)))
+      : item,
+  );
 
 export const Transfer = Schema.Struct({
   info: Schema.JsonObject,
@@ -45,6 +53,8 @@ export class OpenCode extends Context.Service<
   {
     readonly model: OpenCodeModel;
     readonly commands: (names: ReadonlyArray<string>) => Effect.Effect<void, OpenCodeError>;
+    /** Returns the created session ID for direct publication. The command timeout begins after creation and SSE readiness;
+     * callers needing a whole-Attempt deadline must interrupt the run effect at that deadline (not abandon its fiber). */
     readonly run: (
       attempt: OpenCodeAttempt,
       timeout: number,
@@ -56,6 +66,7 @@ export class OpenCode extends Context.Service<
     ) => Effect.Effect<number, OpenCodeError>;
     readonly terminalSessions: Effect.Effect<readonly string[], OpenCodeError>;
     readonly exportSession: (id: string) => Effect.Effect<Transfer, OpenCodeError>;
+    readonly markPublished: (id: string, source: Transfer) => Effect.Effect<void, OpenCodeError>;
   }
 >()(import.meta.url) {
   static layer(options: OpenCodeOptions) {
@@ -84,12 +95,20 @@ export class OpenCode extends Context.Service<
                   channelID: Schema.String,
                   messageID: Schema.String,
                   runID: Schema.String,
+                  published: Schema.optional(Schema.Literal(true)),
                 }),
               ),
             }),
           ),
         });
         const SessionResponse = Schema.Struct({ data: Session });
+        const PublishedInfo = Schema.Struct({
+          id: Schema.String,
+          outcome: Schema.Literals(["succeeded", "failed", "interrupted"]),
+          time: Schema.JsonObject,
+          location: Schema.JsonObject,
+          metadata: Schema.JsonObject,
+        });
         const Sessions = Schema.Struct({
           data: Schema.Array(Session),
           cursor: Schema.Struct({ next: Schema.optional(Schema.NullOr(Schema.String)) }),
@@ -172,7 +191,7 @@ export class OpenCode extends Context.Service<
           request(`/api/session/${encodeURIComponent(id)}`, SessionResponse);
         const finalText = Effect.fnUntraced(function* (
           id: string,
-        ): Effect.fn.Return<OpenCodeResult, OpenCodeError> {
+        ): Effect.fn.Return<OpenCodeOutcome, OpenCodeError> {
           const messages = yield* http
             .get(`${options.url}/api/session/${encodeURIComponent(id)}/message`, {
               urlParams: { type: "assistant", order: "desc", limit: "1" },
@@ -196,7 +215,7 @@ export class OpenCode extends Context.Service<
         const result = Effect.fnUntraced(function* (
           id: string,
           eventError?: string,
-        ): Effect.fn.Return<OpenCodeResult, OpenCodeError> {
+        ): Effect.fn.Return<OpenCodeOutcome, OpenCodeError> {
           const session = yield* outcome(id);
           if (session.data.outcome === "succeeded") return yield* finalText(id);
           if (session.data.outcome === "interrupted") return { type: "interrupted" };
@@ -251,7 +270,9 @@ export class OpenCode extends Context.Service<
                         yield* Deferred.succeed(ready, undefined);
                       if (
                         event.data.sessionID === id &&
-                        event.type.startsWith("session.execution.")
+                        (event.type === "session.execution.succeeded" ||
+                          event.type === "session.execution.failed" ||
+                          event.type === "session.execution.interrupted")
                       ) {
                         yield* Deferred.succeed(
                           done,
@@ -291,8 +312,9 @@ export class OpenCode extends Context.Service<
                 orElse: () => interrupt(id).pipe(Effect.as("timeout")),
               }),
             );
-            if (terminal === "timeout") return { type: "failed", reason: "timeout" } as const;
-            return yield* result(id, terminal);
+            if (terminal === "timeout")
+              return { sessionID: id, type: "failed", reason: "timeout" } as const;
+            return { ...(yield* result(id, terminal)), sessionID: id };
           }).pipe(
             Effect.scoped,
             Effect.onError(() => interrupt(id).pipe(Effect.ignore)),
@@ -340,15 +362,19 @@ export class OpenCode extends Context.Service<
           return removed;
         });
         const terminalSessions = Effect.gen(function* () {
-          const ids: string[] = [];
+          const entries: Array<{ id: string; created: number }> = [];
           yield* list((session) =>
-            session.metadata?.summarizer && session.outcome
+            session.metadata?.summarizer &&
+            session.outcome &&
+            !session.metadata.summarizer.published
               ? Effect.sync(() => {
-                  ids.push(session.id);
+                  entries.push({ id: session.id, created: session.time.created });
                 })
               : Effect.void,
           );
-          return ids;
+          return entries
+            .toSorted((a, b) => a.created - b.created || a.id.localeCompare(b.id))
+            .map((item) => item.id);
         }).pipe(
           Effect.timeoutOrElse({
             duration: "30 seconds",
@@ -374,7 +400,50 @@ export class OpenCode extends Context.Service<
                 ),
               ),
             );
-        return OpenCode.of({ model, commands, run, sweep, terminalSessions, exportSession });
+        const markPublished = Effect.fnUntraced(function* (id: string, source: Transfer) {
+          const info = yield* Schema.decodeUnknownEffect(PublishedInfo)(source.info).pipe(
+            Effect.mapError(() => fail(`Cannot mark invalid OpenCode session ${id}`)),
+          );
+          const summarizer = yield* Schema.decodeUnknownEffect(Schema.JsonObject)(
+            info.metadata["summarizer"],
+          ).pipe(Effect.mapError(() => fail(`Cannot mark unowned OpenCode session ${id}`)));
+          const metadata = { ...info.metadata, summarizer: { ...summarizer, published: true } };
+          const markError = () => fail(`Cannot mark OpenCode session ${id} as published`);
+          const confirm = () =>
+            http.get(`${options.url}/api/session/${encodeURIComponent(id)}`).pipe(
+              Effect.flatMap(
+                HttpClientResponse.schemaBodyJson(Schema.Struct({ data: PublishedInfo })),
+              ),
+              Effect.filterOrFail(
+                ({ data }) =>
+                  data.id === id &&
+                  data.location["directory"] === info.location["directory"] &&
+                  data.outcome === info.outcome &&
+                  data.time["idle"] === info.time["idle"] &&
+                  canonicalJson(data.metadata) === canonicalJson(metadata),
+                markError,
+              ),
+              Effect.asVoid,
+            );
+          yield* HttpClientRequest.patch(
+            `${options.url}/api/session/${encodeURIComponent(id)}`,
+          ).pipe(
+            HttpClientRequest.bodyJsonUnsafe({ metadata }),
+            http.execute,
+            Effect.asVoid,
+            Effect.catch(() => confirm()),
+            Effect.mapError(markError),
+          );
+        });
+        return OpenCode.of({
+          model,
+          commands,
+          run,
+          sweep,
+          terminalSessions,
+          exportSession,
+          markPublished,
+        });
       }),
     );
   }

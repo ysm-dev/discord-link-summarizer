@@ -24,9 +24,15 @@ The implementation calls `@opencode/client/service` v2.0.15 `Service.discover()`
 experimental import route. Import preserves the ID. A 409 or lost reply is
 reconciled against a target export: ID, location, ownership, title, model,
 outcome, immutable session details, and all settled messages must match.
-The private copy remains for retry and is verified on subsequent Runs; the
-target does not receive execution claims or future private mutations. Transfers
-are limited to 2 MiB and 15-second requests, with bounded discovery and sweep.
+After verification the private session is marked via v2.0.15's
+`PATCH /api/session/:sessionID` metadata endpoint (which replaces the metadata
+object). The marker preserves other private metadata; a lost PATCH reply is
+confirmed by reading the private session. Later Runs skip marked sessions and
+retry unmarked sessions oldest-first. Only the private marker is excluded from
+source identity comparisons; target metadata must match exactly. The private
+copy remains for retry, and the target receives no later private mutations.
+Transfers are limited to 2 MiB and 15-second requests, with bounded discovery
+and sweep.
 The verified v2.0.11 and v2.0.15 transfer handlers share this contract; an
 unavailable or incompatible target defers publication.
 The v2.0.15 route was also exercised between two disposable isolated databases
