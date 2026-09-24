@@ -1,155 +1,17 @@
 import { expect, it } from "@effect/vitest";
 import { fromPartial } from "@total-typescript/shoehorn";
-import { Effect, Fiber, Layer, Schema } from "effect";
+import { Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
-import {
-  HttpBody,
-  HttpClient,
-  HttpClientError,
-  HttpClientRequest,
-  HttpClientResponse,
-} from "effect/unstable/http";
-import { OpenCode, Transfer } from "../src/opencode-client.ts";
 import { SessionPublication } from "../src/session-publication.ts";
-import { fakeOpenCode, session } from "./opencode-fake.ts";
+import { session } from "./opencode-fake.ts";
+import { directory, endpoint, harness, source } from "./session-publication-fake.ts";
 
-const directory = "/workspace";
-const source = {
-  info: {
-    ...session(),
-    title: "Summary",
-    location: { directory },
-    agent: "summarizer",
-    model: { providerID: "provider", id: "model", variant: "max" },
-    cost: 0.12,
-    tokens: { input: 23, output: 40, reasoning: 2, cache: { read: 1, write: 0 } },
-    time: { created: 1, updated: 3, idle: 3 },
-    outcome: "succeeded",
-  },
-  messages: [
-    { id: "msg_user", type: "user", text: "untrusted page content" },
-    { id: "msg_assistant", type: "assistant", content: [{ type: "text", text: "summary" }] },
-  ],
-};
-
-const endpoint = {
-  url: "http://127.0.0.1:4444",
-  auth: { type: "basic" as const, username: "opencode", password: "target-password" },
-};
 const publish = Effect.flatMap(SessionPublication, (service) => service.publish("ses_one", false));
 const pending = Effect.flatMap(SessionPublication, (service) => service.pending(false));
 const skipPending = Effect.flatMap(SessionPublication, (service) => service.pending(true));
 const disabledPublish = Effect.flatMap(SessionPublication, (service) =>
   service.publish("ses_one", true),
 );
-type TargetOptions = {
-  readonly existing?: object;
-  readonly lostReply?: boolean;
-  readonly importStatus?: number;
-  readonly hang?: boolean;
-  readonly exportBody?: object;
-  readonly race?: object;
-  readonly noCommit?: boolean;
-  readonly exportStatus?: number;
-};
-
-const harness = (
-  config: {
-    readonly pages?: ReadonlyArray<ReadonlyArray<object>>;
-    readonly source?: object;
-    readonly target?: TargetOptions;
-    readonly unavailable?: boolean;
-    readonly discoveryFailure?: boolean;
-    readonly discoveryHang?: boolean;
-    readonly discoveryEndpoint?: typeof endpoint;
-    readonly hangExport?: boolean;
-    readonly slowList?: boolean;
-  } = {},
-) => {
-  const privateServer = fakeOpenCode({
-    pages: config.pages ?? [[session("ses_one", "succeeded")]],
-    exports: { ses_one: config.source ?? source },
-    hangExport: config.hangExport,
-    slowList: config.slowList,
-  });
-  const requests: string[] = [];
-  const imports: object[] = [];
-  let existing = config.target?.existing;
-  const imported = Schema.decodeSync(
-    Schema.fromJsonString(
-      Schema.Struct({
-        info: Transfer.fields.info,
-        messages: Transfer.fields.messages,
-        location: Schema.Struct({ directory: Schema.String }),
-      }),
-    ),
-  );
-  const targetGet = (request: HttpClientRequest.HttpClientRequest) =>
-    HttpClientResponse.fromWeb(
-      request,
-      config.target?.exportStatus
-        ? new Response(null, { status: config.target.exportStatus })
-        : existing
-          ? Response.json({ data: config.target?.exportBody ?? existing })
-          : new Response(null, { status: 404 }),
-    );
-  const targetPost = (request: HttpClientRequest.HttpClientRequest) => {
-    if (!(request.body instanceof HttpBody.Uint8Array) || !request.body.text)
-      throw new Error("Missing import");
-    const body = imported(request.body.text);
-    imports.push(body);
-    if (config.target?.race) existing = config.target.race;
-    else if (
-      !config.target?.noCommit &&
-      (!config.target?.importStatus ||
-        config.target.importStatus === 200 ||
-        config.target.importStatus === 201)
-    )
-      existing = {
-        messages: body.messages,
-        info: { ...body.info, location: { directory }, time: { created: 1, updated: 4, idle: 3 } },
-      };
-    if (config.target?.lostReply)
-      return Effect.fail(
-        new HttpClientError.HttpClientError({
-          reason: new HttpClientError.TransportError({ request }),
-        }),
-      );
-    return Effect.succeed(
-      HttpClientResponse.fromWeb(
-        request,
-        new Response(null, { status: config.target?.importStatus ?? 200 }),
-      ),
-    );
-  };
-  const http = HttpClient.make((request, url) => {
-    if (url.port === "4321") return privateServer.http.execute(request);
-    requests.push(`${request.method} ${url.pathname}${url.search}`);
-    if (request.headers["authorization"] !== `Basic ${btoa("opencode:target-password")}`)
-      throw new Error("Wrong interactive authentication");
-    if (config.target?.hang) return Effect.never;
-    return request.method === "GET" ? Effect.succeed(targetGet(request)) : targetPost(request);
-  });
-  const privateLayer = OpenCode.layer({
-    url: "http://127.0.0.1:4321",
-    password: "secret",
-    directory,
-    agent: "summarizer",
-  }).pipe(Layer.provide(Layer.succeed(HttpClient.HttpClient, http)));
-  const discover = async () => {
-    if (config.discoveryFailure) throw new Error("private service secret");
-    if (config.discoveryHang) return new Promise<typeof endpoint>(() => undefined);
-    return config.unavailable ? undefined : (config.discoveryEndpoint ?? endpoint);
-  };
-  const layer = SessionPublication.layer(directory, discover).pipe(
-    Layer.provideMerge(privateLayer),
-    Layer.provide(Layer.succeed(HttpClient.HttpClient, http)),
-  );
-  const run = <A, E>(program: Effect.Effect<A, E, SessionPublication>) =>
-    program.pipe(Effect.provide(layer));
-  return { run, requests, imports, privateServer };
-};
-
 it.effect(
   "publishes only owned terminal sessions across all pages, retaining private transcripts",
   () =>
@@ -188,6 +50,146 @@ it.effect("reconciles an already imported ID, a 409, and an import whose reply w
       expect(test.imports).toHaveLength("existing" in target ? 0 : 1);
     }
   }),
+);
+
+it.effect("marks verified private imports durably and skips them on the next sweep", () =>
+  Effect.gen(function* () {
+    const annotated = {
+      ...source,
+      info: { ...source.info, metadata: { ...source.info.metadata, reviewer: { tag: "keep" } } },
+    };
+    const test = harness({ source: annotated });
+    const program = Effect.gen(function* () {
+      expect(yield* pending).toEqual([{ type: "published", id: "ses_one" }]);
+      expect(yield* pending).toEqual([]);
+    });
+    yield* test.run(program);
+    expect(test.imports).toEqual([{ ...annotated, location: { directory } }]);
+    expect(test.discoveries).toBe(2);
+    expect(test.privateServer.requests).toContain("PATCH /api/session/ses_one");
+    expect(
+      test.privateServer.bodies.some(
+        (body) => body.includes('"reviewer":{"tag":"keep"}') && body.includes('"published":true'),
+      ),
+    ).toBe(true);
+  }),
+);
+
+it.effect("reconciles a lost mark reply, retries a missing mark, and rejects an altered mark", () =>
+  Effect.gen(function* () {
+    const lost = harness({ target: { existing: source }, patchLostReply: true });
+    expect(yield* lost.run(publish)).toEqual({ type: "published", id: "ses_one" });
+    expect(yield* lost.run(pending)).toEqual([]);
+    expect(lost.imports).toEqual([]);
+    const missing = harness({ patchLostReply: true, patchNoCommit: true });
+    expect(yield* missing.run(publish)).toEqual({
+      type: "deferred",
+      id: "ses_one",
+      reason: "Cannot mark OpenCode session ses_one as published",
+    });
+    expect((yield* missing.run(pending)).map((result) => result.type)).toEqual(["deferred"]);
+    expect(missing.imports).toHaveLength(1);
+    const corrupt = harness({ patchLostReply: true, patchCorrupt: true });
+    expect(yield* corrupt.run(publish)).toEqual({
+      type: "deferred",
+      id: "ses_one",
+      reason: "Cannot mark OpenCode session ses_one as published",
+    });
+  }),
+);
+
+it.effect("rejects a lost marker reply when private identity or marker cannot be confirmed", () =>
+  Effect.gen(function* () {
+    const metadata = {
+      ...source.info.metadata,
+      summarizer: { ...source.info.metadata.summarizer, published: true },
+    };
+    const confirmed = { ...source.info, metadata };
+    for (const confirmInfo of [
+      { ...confirmed, id: "ses_other" },
+      { ...confirmed, location: { directory: "/other" } },
+      { ...confirmed, outcome: "failed" },
+      { ...confirmed, time: { ...confirmed.time, idle: 4 } },
+      { ...confirmed, time: { created: 1 } },
+      { ...confirmed, location: {} },
+      { ...confirmed, metadata: { ...metadata, reviewer: "unexpected" } },
+      {},
+    ]) {
+      const test = harness({ patchLostReply: true, confirmInfo, target: { existing: source } });
+      expect(yield* test.run(publish)).toEqual({
+        type: "deferred",
+        id: "ses_one",
+        reason: "Cannot mark OpenCode session ses_one as published",
+      });
+      expect(test.imports).toEqual([]);
+    }
+    const missingEnvelope = harness({
+      patchLostReply: true,
+      confirmBody: {},
+      target: { existing: source },
+    });
+    expect(yield* missingEnvelope.run(publish)).toEqual({
+      type: "deferred",
+      id: "ses_one",
+      reason: "Cannot mark OpenCode session ses_one as published",
+    });
+  }),
+);
+
+it.effect(
+  "publishes oldest first and verifies a source mark without tolerating target metadata drift",
+  () =>
+    Effect.gen(function* () {
+      const older = {
+        ...source,
+        info: { ...source.info, id: "ses_z_old", time: { ...source.info.time, created: 0 } },
+      };
+      const test = harness({
+        pages: [
+          [
+            session("ses_one", "succeeded"),
+            { ...session("ses_z_old", "succeeded"), time: { created: 0, updated: 1 } },
+          ],
+        ],
+        sources: { ses_one: source, ses_z_old: older },
+      });
+      expect(yield* test.run(pending)).toEqual([
+        { type: "published", id: "ses_z_old" },
+        { type: "published", id: "ses_one" },
+      ]);
+      expect(test.imports).toHaveLength(2);
+      const sameAge = harness({
+        pages: [[session("ses_z", "succeeded"), session("ses_a", "succeeded")]],
+        sources: {
+          ses_z: { ...source, info: { ...source.info, id: "ses_z" } },
+          ses_a: { ...source, info: { ...source.info, id: "ses_a" } },
+        },
+      });
+      expect((yield* sameAge.run(pending)).map((result) => result.id)).toEqual(["ses_a", "ses_z"]);
+      const marked = {
+        ...source,
+        info: {
+          ...source.info,
+          metadata: { summarizer: { ...source.info.metadata.summarizer, published: true } },
+        },
+      };
+      const retry = harness({ source: marked, target: { existing: source } });
+      expect(yield* retry.run(publish)).toEqual({ type: "published", id: "ses_one" });
+      expect(retry.imports).toEqual([]);
+      const restored = harness({ source: marked });
+      expect(yield* restored.run(publish)).toEqual({ type: "published", id: "ses_one" });
+      expect(restored.imports).toEqual([{ ...source, location: { directory } }]);
+      for (const metadata of [
+        { ...source.info.metadata, arbitrary: { changed: true } },
+        { summarizer: { ...source.info.metadata.summarizer, published: true } },
+      ]) {
+        const collision = harness({
+          target: { existing: { ...source, info: { ...source.info, metadata } } },
+        });
+        expect((yield* collision.run(publish)).type).toBe("deferred");
+        expect(collision.privateServer.requests).not.toContain("PATCH /api/session/ses_one");
+      }
+    }),
 );
 
 it.effect(
@@ -474,11 +476,21 @@ it.effect("bounds a paginated source listing even when the private server stalls
   }),
 );
 
-it.effect("bounds the complete retry sweep when many publication attempts stall", () =>
+it.effect("bounds a publication sweep across many slow transfers", () =>
   Effect.gen(function* () {
+    const ids = Array.from({ length: 5 }, (_, index) => `ses_${index}`);
     const test = harness({
-      pages: [Array.from({ length: 20 }, () => session("ses_one", "succeeded"))],
-      discoveryHang: true,
+      pages: [ids.map((id, index) => session(id, "succeeded", index + 100))],
+      sources: Object.fromEntries(
+        ids.map((id, index) => [
+          id,
+          {
+            ...source,
+            info: { ...source.info, id, time: { ...source.info.time, created: index + 1 } },
+          },
+        ]),
+      ),
+      target: { hang: true },
     });
     const fiber = yield* Effect.forkChild(Effect.flip(test.run(pending)));
     yield* TestClock.adjust("61 seconds");

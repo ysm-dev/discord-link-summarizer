@@ -1,7 +1,7 @@
 import { Service } from "@opencode/client/service";
 import { Context, Effect, Layer, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
-import { OpenCode, OpenCodeError, Transfer } from "./opencode-client.ts";
+import { canonicalJson, OpenCode, OpenCodeError, Transfer } from "./opencode-client.ts";
 import { boundedJson, maxTransferBytes, TransferSizeError } from "./transfer-http.ts";
 
 const fail = (reason: string) => new OpenCodeError({ reason });
@@ -25,6 +25,7 @@ const Info = Schema.Struct({
       channelID: Schema.String,
       messageID: Schema.String,
       runID: Schema.String,
+      published: Schema.optional(Schema.Literal(true)),
     }),
   }),
 });
@@ -42,22 +43,27 @@ const immutableFields = [
   "title",
   "agent",
   "model",
-  "metadata",
   "permissions",
   "cost",
   "tokens",
   "outcome",
 ] as const;
-const canonical = (value: Schema.Json): string =>
-  JSON.stringify(value, (_key, item: Schema.Json) =>
-    item && !Array.isArray(item) && typeof item === "object"
-      ? Object.fromEntries(Object.entries(item).toSorted(([a], [b]) => a.localeCompare(b)))
-      : item,
-  );
-const identity = (info: Transfer["info"], time: typeof Info.Type.time) => ({
-  ...Object.fromEntries(immutableFields.map((key) => [key, info[key] ?? null])),
-  time: { created: time.created, idle: time.idle },
-});
+const sourceMetadata = (info: Transfer["info"]) => {
+  const metadata = Schema.decodeUnknownSync(Schema.JsonObject)(info["metadata"]);
+  const owned = Schema.decodeUnknownSync(Schema.JsonObject)(metadata["summarizer"]);
+  const withoutMarker = { ...owned };
+  delete withoutMarker["published"];
+  return { ...metadata, summarizer: withoutMarker };
+};
+const identity = (info: Transfer["info"], time: typeof Info.Type.time, privateSource: boolean) => {
+  return {
+    ...Object.fromEntries(immutableFields.map((key) => [key, info[key] ?? null])),
+    metadata: privateSource
+      ? sourceMetadata(info)
+      : Schema.decodeUnknownSync(Schema.JsonObject)(info["metadata"]),
+    time: { created: time.created, idle: time.idle },
+  };
+};
 
 /** Discover only. A missing target or failed transfer leaves the private transcript available for a later Run. */
 export class SessionPublication extends Context.Service<
@@ -135,46 +141,56 @@ export class SessionPublication extends Context.Service<
           if (!existing) return false;
           const info = yield* checked(existing, id);
           if (
-            canonical(identity(source.info, sourceInfo.time)) !==
-              canonical(identity(existing.info, info.time)) ||
-            canonical(source.messages) !== canonical(existing.messages)
+            canonicalJson(identity(source.info, sourceInfo.time, true)) !==
+              canonicalJson(identity(existing.info, info.time, false)) ||
+            canonicalJson(source.messages) !== canonicalJson(existing.messages)
           )
             return yield* fail(`Interactive OpenCode session ID collision: ${id}`);
           return true;
         });
-        const transfer = Effect.fnUntraced(function* (id: string) {
+        const transfer = Effect.fnUntraced(function* (id: string, endpoint: Endpoint) {
           const source = yield* privateClient.exportSession(id);
           const sourceInfo = yield* checked(source, id);
-          const endpoint = yield* target();
-          if (yield* verify(endpoint, id, source, sourceInfo)) return undefined;
-          const body = { ...source, location: { directory } };
-          if (Buffer.byteLength(JSON.stringify(body)) > maxTransferBytes)
-            return yield* fail(`OpenCode session ${id} exceeds import size limit`);
-          const response = yield* HttpClientRequest.post(
-            `${endpoint.url}/api/experimental/session/import`,
-            {
-              headers: Service.headers(endpoint),
-            },
-          ).pipe(
-            HttpClientRequest.bodyJsonUnsafe(body),
-            http.execute,
-            Effect.timeout("15 seconds"),
-            Effect.catch(() =>
-              verify(endpoint, id, source, sourceInfo).pipe(
-                Effect.flatMap((same) =>
-                  same
-                    ? Effect.succeed(undefined)
-                    : Effect.fail(fail(`Interactive OpenCode import deferred for ${id}`)),
+          if (!(yield* verify(endpoint, id, source, sourceInfo))) {
+            const body = {
+              ...source,
+              info: { ...source.info, metadata: sourceMetadata(source.info) },
+              location: { directory },
+            };
+            if (Buffer.byteLength(JSON.stringify(body)) > maxTransferBytes)
+              return yield* fail(`OpenCode session ${id} exceeds import size limit`);
+            const response = yield* HttpClientRequest.post(
+              `${endpoint.url}/api/experimental/session/import`,
+              { headers: Service.headers(endpoint) },
+            ).pipe(
+              HttpClientRequest.bodyJsonUnsafe(body),
+              http.execute,
+              Effect.timeout("15 seconds"),
+              Effect.catch(() =>
+                verify(endpoint, id, source, sourceInfo).pipe(
+                  Effect.flatMap((same) =>
+                    same
+                      ? Effect.succeed(undefined)
+                      : Effect.fail(fail(`Interactive OpenCode import deferred for ${id}`)),
+                  ),
                 ),
               ),
-            ),
-          );
-          if (response && response.status !== 200 && response.status !== 409)
-            return yield* fail(`Interactive OpenCode import returned ${response.status}`);
-          if (!(yield* verify(endpoint, id, source, sourceInfo)))
-            return yield* fail(`Interactive OpenCode import not visible for ${id}`);
+            );
+            if (response && response.status !== 200 && response.status !== 409)
+              return yield* fail(`Interactive OpenCode import returned ${response.status}`);
+            if (!(yield* verify(endpoint, id, source, sourceInfo)))
+              return yield* fail(`Interactive OpenCode import not visible for ${id}`);
+          }
+          yield* privateClient.markPublished(id, source);
           return undefined;
         });
+        const publishTo = (id: string, endpoint: Endpoint) =>
+          transfer(id, endpoint).pipe(
+            Effect.as({ type: "published", id } as const),
+            Effect.catch((error) =>
+              Effect.succeed({ type: "deferred", id, reason: error.reason } as const),
+            ),
+          );
         const publish = (id: string, deleteSessions: boolean): Effect.Effect<PublicationResult> =>
           deleteSessions
             ? Effect.succeed({
@@ -182,8 +198,8 @@ export class SessionPublication extends Context.Service<
                 id,
                 reason: "Session retention and publication disabled",
               })
-            : transfer(id).pipe(
-                Effect.as({ type: "published", id } as const),
+            : target().pipe(
+                Effect.flatMap((endpoint) => publishTo(id, endpoint)),
                 Effect.catch((error) =>
                   Effect.succeed({ type: "deferred", id, reason: error.reason } as const),
                 ),
@@ -191,9 +207,10 @@ export class SessionPublication extends Context.Service<
         const pending = Effect.fnUntraced(
           function* (deleteSessions: boolean) {
             if (deleteSessions) return [];
+            const endpoint = yield* target();
             const ids = yield* privateClient.terminalSessions;
             const results: PublicationResult[] = [];
-            for (const id of ids) results.push(yield* publish(id, false));
+            for (const id of ids) results.push(yield* publishTo(id, endpoint));
             return results;
           },
           Effect.timeoutOrElse({
