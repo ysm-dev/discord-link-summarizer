@@ -1,4 +1,6 @@
 import { Plugin } from "@opencode/plugin";
+import { BunServices } from "@effect/platform-bun";
+import { Effect } from "effect";
 import { runExtraction } from "./extraction-runner.ts";
 import { extractionUrl } from "./extraction-url.ts";
 
@@ -26,11 +28,11 @@ export default Plugin.define({
             codemode: false,
           },
           execute: async (input, context) => ({
-            content: await runExtraction(
-              kind,
-              extractionUrl(input, kind),
-              ctx.location.directory,
-              context.signal,
+            content: await Effect.runPromise(
+              runExtraction(kind, extractionUrl(input, kind), ctx.location.directory).pipe(
+                Effect.provide(BunServices.layer),
+              ),
+              { signal: context.signal },
             ),
           }),
         });
