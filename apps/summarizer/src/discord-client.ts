@@ -51,6 +51,10 @@ export interface DiscordApi {
     DiscordFailure
   >;
   readonly getChannel: (id: string) => Effect.Effect<DiscordChannel, DiscordFailure>;
+  readonly getMessage: (
+    channelId: string,
+    messageId: string,
+  ) => Effect.Effect<DiscordMessage, DiscordFailure>;
   readonly listMessages: (
     channelId: string,
     before?: string,
@@ -224,6 +228,8 @@ export const makeDiscord = (
         return { user, date };
       }),
       getChannel: (id) => read(DiscordChannel(), `/channels/${encodeURIComponent(id)}`),
+      getMessage: (channelId, messageId) =>
+        read(DiscordMessage(), `${messagePath(channelId)}/${encodeURIComponent(messageId)}`),
       listMessages,
       listThreadMessages: listMessages,
       startThread: (channelId, messageId, name) =>

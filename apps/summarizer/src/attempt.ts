@@ -47,7 +47,7 @@ export const parseNote = (content: string): Note | undefined => {
     return { kind: "started", number, maximum };
   if (match[1] === "⚠️ 요약 실패" && match[4])
     return { kind: "failed", number, maximum, reason: match[4] };
-  if (match[4] === "재시도 횟수에 포함되지 않음") {
+  if (match[1] === "⏸️ 요약 중단" && match[4] === "재시도 횟수에 포함되지 않음") {
     return { kind: "interrupted", number, maximum };
   }
   return undefined;

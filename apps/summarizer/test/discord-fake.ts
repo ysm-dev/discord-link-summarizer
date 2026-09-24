@@ -124,7 +124,7 @@ export class FakeDiscord {
           return yield* new HttpClientError.HttpClientError({
             reason: new HttpClientError.TransportError({ request }),
           });
-        return reply(result.status, result.body);
+        return reply(result.status, fault?.body ?? result.body);
       }.bind(this),
     ),
   );
@@ -153,12 +153,7 @@ export class FakeDiscord {
     }
     if (parts[0] !== "channels") return { status: 404, body: { code: 10003 } };
     const id = parts[1] ?? "";
-    if (method === "GET" && parts.length === 2) {
-      const channel = this.channels.get(id);
-      return channel === undefined
-        ? { status: 404, body: { code: 10003 } }
-        : { status: 200, body: channel };
-    }
+    if (method === "GET" && parts.length === 2) return this.routeChannel(id);
     if (parts[2] === "threads" && parts[3] === "archived") {
       const before = url.searchParams.get("before");
       const threads = [...this.threads.values()]
@@ -205,6 +200,24 @@ export class FakeDiscord {
     return { status: 404, body: { code: 10003 } };
   }
 
+  private routeChannel(id: string): { status: number; body?: object } {
+    const channel = this.channels.get(id);
+    if (channel) return { status: 200, body: channel };
+    const thread = this.threads.get(id);
+    if (thread)
+      return {
+        status: 200,
+        body: { id, guild_id: this.channels.get(thread.parent_id)?.guild_id, type: 11 },
+      };
+    return { status: 404, body: { code: 10003 } };
+  }
+
+  private routeSingleMessage(id: string, messageId: string): { status: number; body?: object } {
+    const item = this.messages.get(id)?.find((message) => message.id === messageId);
+    if (item) return { status: 200, body: item };
+    return { status: 404, body: { code: 10008 } };
+  }
+
   private routeMessage(
     method: string,
     parts: string[],
@@ -215,6 +228,7 @@ export class FakeDiscord {
     const id = parts[1] ?? "";
     const list = this.messages.get(id) ?? [];
     if (method === "GET") {
+      if (parts[3]) return this.routeSingleMessage(id, parts[3]);
       const before = url.searchParams.get("before");
       return {
         status: 200,

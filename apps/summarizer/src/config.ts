@@ -2,6 +2,11 @@ import { Data, DateTime, Duration, Effect, Redacted, Schema } from "effect";
 import * as Yaml from "effect/unstable/encoding/Yaml";
 
 const nonEmpty = Schema.String.check(Schema.isMinLength(1));
+const snowflake = Schema.String.check(
+  Schema.makeFilter((value) =>
+    /^(?:0|[1-9]\d*)$/.test(value) ? undefined : "must be a decimal Snowflake",
+  ),
+);
 const since = Schema.String.check(
   Schema.makeFilter((value) =>
     value.endsWith("Z") || value.at(-6) === "+" || value.at(-6) === "-"
@@ -17,7 +22,7 @@ const duration = Schema.DurationFromString.check(
   ),
 );
 const channelSchema = Schema.Struct({
-  id: nonEmpty,
+  id: snowflake,
   label: nonEmpty,
   since: Schema.optionalKey(since),
   command: Schema.optionalKey(nonEmpty),
@@ -25,6 +30,7 @@ const channelSchema = Schema.Struct({
 const configSchema = Schema.Struct({
   opencode: Schema.Struct({ directory: nonEmpty, agent: nonEmpty }),
   since,
+  state_channel_id: snowflake,
   command: Schema.optionalKey(nonEmpty),
   horizon: Schema.optionalKey(duration),
   concurrency: Schema.optionalKey(Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0))),
@@ -43,6 +49,7 @@ interface ChannelSettings {
 }
 
 export interface Settings {
+  readonly stateChannelId: string;
   readonly opencode: { readonly directory: string; readonly agent: string };
   readonly since: DateTime.Utc;
   readonly command: string;
@@ -85,9 +92,15 @@ export const decodeConfig = (text: string, home: string): Effect.Effect<Settings
     if (new Set(config.channels.map((channel) => channel.id)).size !== config.channels.length) {
       return yield* new ConfigError({ message: "Duplicate channel ID" });
     }
+    if (config.channels.some((channel) => channel.id === config.state_channel_id)) {
+      return yield* new ConfigError({
+        message: "State channel must be distinct from Watched Channels",
+      });
+    }
     const command = config.command ?? "summarize";
     const retryWaits = config.retry_waits ?? [Duration.minutes(10), Duration.hours(1)];
     return {
+      stateChannelId: config.state_channel_id,
       opencode: {
         directory: expandHome(config.opencode.directory, home),
         agent: config.opencode.agent,

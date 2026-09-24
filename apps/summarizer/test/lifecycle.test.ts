@@ -9,12 +9,7 @@ import {
   type TimedNote,
 } from "../src/attempt.ts";
 import { firstLink, linkFromPost, linkPostState, threadTitle } from "../src/link-post.ts";
-import {
-  catchUpLowerBound,
-  normalLowerBound,
-  shouldProbeArchive,
-  withinWindow,
-} from "../src/window.ts";
+import { normalLowerBound, withinWindow } from "../src/window.ts";
 
 const at = (minute: number): DateTime.Utc =>
   DateTime.makeUnsafe(1_700_000_000_000 + minute * 60000);
@@ -106,6 +101,7 @@ it("roundtrips Korean Attempt notes and classifies Summary parts", () => {
     "⚠️ 요약 실패 (1/3)",
     "⚠️ 요약 실패 (1/3): ",
     "⏸️ 요약 중단 (1/3): wrong",
+    "⏳ 요약 중 (1/3): 재시도 횟수에 포함되지 않음",
   ]) {
     expect(parseNote(text)).toBeUndefined();
   }
@@ -205,20 +201,13 @@ it("uses exact stale/retry boundaries and the failure note's timestamp", () => {
   ).toBe(false);
 });
 
-it("caps new channels at Horizon, catches up known channels to newest bot thread, includes exact boundaries", () => {
+it("caps new channels at Horizon and includes exact boundaries", () => {
   expect(normalLowerBound(at(0), at(100), Duration.minutes(10))).toBe(
     DateTime.toEpochMillis(at(90)),
   );
   expect(normalLowerBound(at(95), at(100), Duration.minutes(10))).toBe(
     DateTime.toEpochMillis(at(95)),
   );
-  expect(shouldProbeArchive(false)).toBe(true);
-  expect(shouldProbeArchive(true)).toBe(false);
-  const bound = normalLowerBound(at(0), at(100), Duration.minutes(10));
-  expect(catchUpLowerBound(at(0), bound, undefined)).toBe(bound);
-  expect(catchUpLowerBound(at(0), bound, at(10))).toBe(DateTime.toEpochMillis(at(10)));
-  expect(catchUpLowerBound(at(20), bound, at(10))).toBe(DateTime.toEpochMillis(at(20)));
-  expect(catchUpLowerBound(at(0), bound, at(95))).toBe(bound);
   expect(withinWindow(at(10), DateTime.toEpochMillis(at(10)))).toBe(true);
   expect(withinWindow(at(9), DateTime.toEpochMillis(at(10)))).toBe(false);
 });
