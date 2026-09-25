@@ -1,23 +1,16 @@
 import { isIP } from "node:net";
+import { Schema } from "effect";
 
 export type ExtractionKind = "page" | "youtube";
 // oxlint-disable-next-line eslint/no-control-regex -- Reject embedded control bytes in an untrusted URL.
 const unsafeUrlCharacters = /[\u0000-\u0020\u007f]/u;
+const argsSchema = Schema.Struct({ url: Schema.String });
 
 // Trust boundary: OpenCode tool input comes from model-generated JSON.
 // oxlint-disable-next-line typescript/no-restricted-types -- Decode the untrusted model-generated tool arguments before use.
 export function extractionUrl(input: unknown, kind: ExtractionKind): string {
-  if (
-    typeof input !== "object" ||
-    input === null ||
-    Array.isArray(input) ||
-    Object.keys(input).length !== 1 ||
-    !("url" in input) ||
-    typeof input.url !== "string"
-  ) {
-    throw new Error("Expected one URL string");
-  }
-  const value = input.url;
+  const args = Schema.decodeUnknownSync(argsSchema, { onExcessProperty: "error" })(input);
+  const value = args.url;
   if (value.length > 4096 || unsafeUrlCharacters.test(value) || !/^https?:\/\//iu.test(value)) {
     throw new Error("Expected an http(s) URL without whitespace or controls");
   }

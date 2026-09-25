@@ -246,7 +246,11 @@ it.effect("refuses terminal threads whose parent, owner, archive or status chang
       discord.addMessage(post.id, content, at, "bot");
       discord.threads.set(post.id, { ...thread, ...invalid });
       expect((yield* Effect.flip(invoke())).message).toContain(
-        name.startsWith("⚠️") ? "Unverified Given-up" : "Unverified terminal",
+        "parent_id" in invalid || "owner_id" in invalid || "name" in invalid
+          ? "Invalid Summary Thread"
+          : name.startsWith("⚠️")
+            ? "Unverified Given-up"
+            : "Unverified terminal",
       );
     }
   }),

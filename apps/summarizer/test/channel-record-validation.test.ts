@@ -12,48 +12,7 @@ import {
   type Status,
 } from "../src/channel-record.ts";
 import { horizon, journaledLink, now, open, prepare, since } from "./channel-record-fixture.ts";
-
-const readyStatusFor = (id: string): Status => ({
-  id,
-  state: "ready",
-  count: 1,
-  hash: "a".repeat(64),
-  parts: ["1"],
-});
-
-it.effect("a deleted READY thread resets to Pending before the next Attempt", () =>
-  Effect.gen(function* () {
-    const { fake, api } = yield* prepare;
-    const { source, journal: initial } = yield* journaledLink(fake, api, now - 100);
-    let journal: Journal = yield* journalStatus(
-      api,
-      "20",
-      "bot",
-      initial,
-      readyStatusFor(source.id),
-    );
-    journal = yield* rewindRecent(api, "20", "bot", journal, since, horizon);
-    expect(journal.entries.get(source.id)?.state).toBe("pending");
-    expect(
-      fake.messages
-        .get(journal.parent)
-        ?.some((m) => m.content.includes(`"key":"reset/${source.id}:0"`)),
-    ).toBe(true);
-  }),
-);
-
-it.effect("Pending can become READY without discarding its verified parts", () =>
-  Effect.gen(function* () {
-    const { fake, api } = yield* prepare;
-    const { source, journal: initial } = yield* journaledLink(fake, api, now);
-    let journal: Journal = initial;
-    journal = yield* journalStatus(api, "20", "bot", journal, { id: source.id, state: "pending" });
-    journal = yield* journalStatus(api, "20", "bot", journal, readyStatusFor(source.id));
-    expect((yield* open(api)).journal?.entries.get(source.id)).toEqual(
-      journal.entries.get(source.id),
-    );
-  }),
-);
+import { setup, at, openRecord } from "./run-fixture.ts";
 
 it.effect("recent checks ignore old or non-link posts and propagate read failures", () =>
   Effect.gen(function* () {
@@ -127,22 +86,67 @@ it.effect("a post exactly at the recent boundary is still rechecked", () =>
   }),
 );
 
-it.effect("a page crossing the exclusive floor finishes even at exactly 100 messages", () =>
+it.effect("a full page crossing the floor summarizes every eligible Link Post across Runs", () =>
   Effect.gen(function* () {
-    const { fake, api } = yield* prepare;
-    const journal = (yield* open(api)).journal!;
-    const boundary = fake.addMessage("10", "https://excluded.test", now - 7 * 86400000);
-    fake.messages.set("10", [{ ...boundary, id: journal.record.floor }]);
-    for (let i = 0; i < 99; i++) fake.addMessage("10", `https://due.test/${i}`, now - i);
-    const scan = yield* beginScan(api, "20", journal);
-    const worked = yield* scanPages(api, "20", "bot", scan, 1);
-    expect(worked.record.phase).toBe("work");
-    expect(worked.entries.size).toBe(99);
-    expect(worked.entries.has(journal.record.floor)).toBe(false);
-    expect(yield* scanPages(api, "20", "bot", worked, 1)).toEqual(worked);
-    expect(yield* beginScan(api, "20", worked)).toEqual(worked);
+    const { discord, invoke } = yield* setup();
+    const excluded = discord.addMessage("10", "https://excluded.test", at - 7 * 86400000 - 1);
+    const eligible = discord.addMessage("10", "https://due.test/old", at - 100);
+    for (let i = 0; i < 99; i++) discord.addMessage("10", `plain ${i}`, at - i);
+    expect(yield* invoke()).toBe(0);
+    expect(discord.threads.get(excluded.id)).toBeUndefined();
+    expect(discord.threads.get(eligible.id)?.thread_metadata.archived).toBe(true);
+    expect(yield* invoke()).toBe(0);
+    expect(
+      discord.messages.get(eligible.id)?.filter((m) => m.content === "안녕하세요"),
+    ).toHaveLength(1);
   }),
 );
+
+it.effect("a full page ending exactly at the exclusive floor needs no older read", () =>
+  Effect.gen(function* () {
+    const { discord, invoke } = yield* setup();
+    const { api, journal } = yield* openRecord(discord);
+    const boundary = discord.addMessage("10", "plain boundary", at - 7 * 86400000);
+    discord.messages.set("10", [{ ...boundary, id: journal.record.floor }]);
+    const due = discord.addMessage("10", "https://due.test", at - 100);
+    for (let index = 0; index < 98; index++) discord.addMessage("10", `plain ${index}`, at - index);
+    const scanning = yield* beginScan(api, "20", journal);
+    discord.faults.push({
+      method: "GET",
+      path: `/channels/10/messages?limit=100&before=${journal.record.floor}`,
+      status: 403,
+    });
+    yield* scanPages(api, "20", "bot", scanning, 2);
+    discord.faults.length = 0;
+    expect(yield* invoke()).toBe(0);
+    expect(discord.threads.get(due.id)?.thread_metadata.archived).toBe(true);
+    expect(discord.threads.get(journal.record.floor)).toBeUndefined();
+    expect(yield* invoke()).toBe(0);
+    expect(discord.messages.get(due.id)?.filter((m) => m.content === "안녕하세요")).toHaveLength(1);
+  }),
+);
+
+for (const worked of [false, true])
+  it.effect(
+    `a ${worked ? "working" : "scanning"} epoch finishes before admitting newer posts`,
+    () =>
+      Effect.gen(function* () {
+        const { discord, invoke } = yield* setup();
+        const older = discord.addMessage("10", "https://old.test", at - 200);
+        const { api, journal } = yield* openRecord(discord);
+        const scanning = yield* beginScan(api, "20", journal);
+        if (worked) yield* scanPages(api, "20", "bot", scanning, 1);
+        const newer = discord.addMessage("10", "https://late.test", at + 100);
+        expect(yield* invoke()).toBe(0);
+        expect(discord.threads.get(older.id)?.thread_metadata.archived).toBe(true);
+        expect(discord.threads.get(newer.id)).toBeUndefined();
+        expect(yield* invoke()).toBe(0);
+        expect(discord.threads.get(newer.id)?.thread_metadata.archived).toBe(true);
+        expect(
+          discord.messages.get(older.id)?.filter((m) => m.content === "안녕하세요"),
+        ).toHaveLength(1);
+      }),
+  );
 
 it.effect("a late message above the epoch snapshot cannot enter its journal", () =>
   Effect.gen(function* () {
@@ -162,14 +166,18 @@ it.effect("a late message above the epoch snapshot cannot enter its journal", ()
   }),
 );
 
-it.effect("work phase never scans a second page after discovery completes", () =>
+it.effect("a completed discovery still summarizes a newly arrived Link Post", () =>
   Effect.gen(function* () {
-    const { fake, api } = yield* prepare;
-    fake.addMessage("10", "https://one.test", now - 100);
-    const journal = yield* beginScan(api, "20", (yield* open(api)).journal!);
-    const worked = yield* scanPages(api, "20", "bot", journal, 2);
-    expect(worked.record.phase).toBe("work");
-    expect(fake.requests.filter((r) => r.path.startsWith("/channels/10/messages?")).length).toBe(2);
+    const { discord, invoke } = yield* setup();
+    const first = discord.addMessage("10", "https://one.test", at - 100);
+    expect(yield* invoke()).toBe(0);
+    const next = discord.addMessage("10", "https://two.test", at + 100);
+    expect(yield* invoke()).toBe(0);
+    expect(discord.threads.get(first.id)?.thread_metadata.archived).toBe(true);
+    expect(discord.threads.get(next.id)?.thread_metadata.archived).toBe(true);
+    expect(discord.messages.get(first.id)?.filter((m) => m.content === "안녕하세요")).toHaveLength(
+      1,
+    );
   }),
 );
 
@@ -226,6 +234,11 @@ it.effect(
         { ...journal.record, phase: "work", high: null, before: "1" },
         { ...journal.record, since: "not-a-date" },
         { ...journal.record, since: "2026-09-15" },
+        { ...journal.record, recentBefore: "1" },
+        { ...journal.record, recentFloor: "1" },
+        { ...journal.record, recentSince: journal.record.since },
+        { ...journal.record, recentBefore: "1", recentFloor: "1" },
+        { ...journal.record, recentReset: "1" },
         { ...journal.record, unknown: true },
       ];
       for (const value of variants) {

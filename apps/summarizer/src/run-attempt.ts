@@ -1,10 +1,10 @@
-import { Clock, Data, DateTime, Duration, Effect, Exit, Option } from "effect";
+import { Clock, Data, DateTime, Duration, Effect, Exit, Option, Schema } from "effect";
 import type { Settings } from "./config.ts";
 import { attemptStatus, formatNote, parseNote, summaryParts, type Note } from "./attempt.ts";
 import { journalStatus, persistReady, type Journal } from "./channel-record.ts";
 import { verifyReady } from "./ready.ts";
 import type { DiscordApi } from "./discord-client.ts";
-import type { DiscordMessage } from "./discord-schema.ts";
+import { DiscordThread, type DiscordMessage } from "./discord-schema.ts";
 import { linkFromPost, linkPostState, threadTitle } from "./link-post.ts";
 import type { OpenCodeAttempt, OpenCodeError, OpenCodeResult } from "./opencode-client.ts";
 import type { PublicationResult } from "./session-publication.ts";
@@ -80,6 +80,27 @@ const threadFor = (api: DiscordApi, source: DiscordMessage, name: string, bot: s
     return thread?.owner_id === bot ? thread : undefined;
   });
 
+const existingThread = (api: DiscordApi, id: string, parent: string) =>
+  api.getChannel(id).pipe(
+    Effect.catchIf(
+      (error) => error.kind === "not-found",
+      () => Effect.succeed(undefined),
+    ),
+    Effect.flatMap((channel) => {
+      if (!channel) return Effect.succeed(undefined);
+      if (channel.type !== 11 || channel.parent_id !== parent)
+        return new AttemptFailure({ message: `Invalid Summary Thread ${id}` });
+      return Schema.decodeUnknownEffect(DiscordThread())(channel).pipe(
+        Effect.mapError(() => new AttemptFailure({ message: `Invalid Summary Thread ${id}` })),
+      );
+    }),
+  );
+
+const changedThread = (source: DiscordMessage, fresh: DiscordMessage["thread"], bot: string) =>
+  Boolean(
+    source.thread && fresh && linkPostState(source.thread, bot) !== linkPostState(fresh, bot),
+  );
+
 const notesOf = (messages: readonly DiscordMessage[], bot: string) =>
   messages.flatMap((message) => {
     const note = message.author.id === bot ? parseNote(message.content) : undefined;
@@ -118,6 +139,21 @@ type Publisher = {
   readonly publish: (id: string, deleteSessions: boolean) => Effect.Effect<PublicationResult>;
 };
 class AttemptFailure extends Data.TaggedError("AttemptFailure")<{ readonly message: string }> {}
+type AttemptContext = {
+  readonly api: DiscordApi;
+  readonly stateId: string;
+  readonly bot: string;
+  readonly journal: Journal;
+  readonly item: Work;
+};
+
+const resetMissingReady = (context: AttemptContext, thread: DiscordMessage["thread"]) =>
+  !thread && context.journal.entries.get(context.item.id)?.state === "ready"
+    ? journalStatus(context.api, context.stateId, context.bot, context.journal, {
+        id: context.item.id,
+        state: "pending",
+      })
+    : Effect.succeed(context.journal);
 
 const verifyCommitted = (
   api: DiscordApi,
@@ -208,11 +244,7 @@ const failed = (
   });
 
 const finishFailure = (
-  api: DiscordApi,
-  stateId: string,
-  bot: string,
-  journal: Journal,
-  item: Work,
+  context: AttemptContext,
   note: DiscordMessage,
   number: number,
   maximum: number,
@@ -220,6 +252,7 @@ const finishFailure = (
   reason: string,
 ) =>
   Effect.gen(function* () {
+    const { api, stateId, bot, journal, item } = context;
     yield* failed(api, item.id, note, number, maximum, name, reason);
     if (number !== maximum) return journal;
     yield* verifyGivenUp(api, item.channel.id, item.id, bot);
@@ -230,14 +263,10 @@ const finishFailure = (
   });
 
 const attempt = (
-  api: DiscordApi,
+  context: AttemptContext,
   openCode: Client,
   publication: Publisher,
-  stateId: string,
-  bot: string,
   settings: Settings,
-  journal: Journal,
-  item: Work,
   runID: string,
   link: string,
   name: string,
@@ -245,6 +274,7 @@ const attempt = (
   number: number,
 ) =>
   Effect.gen(function* () {
+    const { api, stateId, bot, journal, item } = context;
     const thread = item.id;
     const value: Note = { kind: "started", number, maximum: settings.maxAttempts };
     const note = yield* writeMessage(api, thread, formatNote(value));
@@ -265,11 +295,7 @@ const attempt = (
         .pipe(Effect.timeoutOption(Duration.toMillis(settings.summaryTimeout)));
       if (Option.isNone(outcome)) {
         return yield* finishFailure(
-          api,
-          stateId,
-          bot,
-          journal,
-          item,
+          context,
           note,
           number,
           settings.maxAttempts,
@@ -292,11 +318,7 @@ const attempt = (
           return yield* new AttemptFailure({ message: `OpenCode infrastructure: ${reason}` });
         }
         return yield* finishFailure(
-          api,
-          stateId,
-          bot,
-          journal,
-          item,
+          context,
           note,
           number,
           settings.maxAttempts,
@@ -330,7 +352,7 @@ export const workOn = (
   runID: string,
 ) =>
   Effect.gen(function* () {
-    const journal = initial;
+    let journal = initial;
     const source = yield* api.getMessage(item.channel.id, item.id).pipe(
       Effect.catchIf(
         (error) => error.kind === "not-found",
@@ -341,8 +363,19 @@ export const workOn = (
     if (!link)
       return yield* journalStatus(api, stateId, bot, journal, { id: item.id, state: "terminal" });
     const name = threadTitle(source.content, link);
-    let thread = yield* threadFor(api, source, name, bot);
-    if (source.thread && !thread)
+    const freshThread = yield* existingThread(api, source.id, item.channel.id);
+    if (changedThread(source, freshThread, bot))
+      return yield* new AttemptFailure({ message: `Invalid Summary Thread ${item.id}` });
+    // Only an already-started Summary Thread survives a later Since.
+    if (
+      Date.parse(source.timestamp) < DateTime.toEpochMillis(item.channel.since) &&
+      linkPostState(freshThread, bot) !== "in-progress"
+    )
+      return yield* journalStatus(api, stateId, bot, journal, { id: item.id, state: "terminal" });
+    journal = yield* resetMissingReady({ api, stateId, bot, journal, item }, freshThread);
+    const context = { api, stateId, bot, journal, item };
+    let thread = yield* threadFor(api, { ...source, thread: freshThread }, name, bot);
+    if (freshThread && !thread)
       return yield* journalStatus(api, stateId, bot, journal, { id: item.id, state: "terminal" });
     if (thread && linkPostState(thread, bot) !== "in-progress") {
       if (linkPostState(thread, bot) === "done")
@@ -371,14 +404,10 @@ export const workOn = (
       return yield* journalStatus(api, stateId, bot, journal, { id: item.id, state: "terminal" });
     }
     return yield* attempt(
-      api,
+      context,
       openCode,
       publication,
-      stateId,
-      bot,
       settings,
-      journal,
-      item,
       runID,
       link,
       name,

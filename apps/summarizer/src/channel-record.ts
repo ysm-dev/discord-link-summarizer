@@ -1,5 +1,5 @@
 import { Clock, Data, DateTime, Duration, Effect, Exit, Schema } from "effect";
-import type { DiscordApi, DiscordFailure } from "./discord-client.ts";
+import { allMessages, type DiscordApi, type DiscordFailure } from "./discord-client.ts";
 import type { DiscordMessage } from "./discord-schema.ts";
 import { normalLowerBound } from "./window.ts";
 import { readyManifest, verifyReady } from "./ready.ts";
@@ -26,6 +26,10 @@ const recordSchema = Schema.Struct({
   checkpoint: Schema.optionalKey(snowflake),
   archiveBefore: Schema.optionalKey(Schema.NullOr(Schema.String)),
   journalReady: Schema.optionalKey(Schema.Boolean),
+  recentBefore: Schema.optionalKey(snowflake),
+  recentFloor: Schema.optionalKey(snowflake),
+  recentSince: Schema.optionalKey(canonicalSince),
+  recentReset: Schema.optionalKey(snowflake),
 });
 const batchSchema = Schema.Struct({ key: Schema.String, ids: Schema.Array(snowflake) });
 const statusSchema = Schema.Struct({
@@ -64,18 +68,6 @@ const parse = <S extends Schema.ConstraintDecoder<Schema.Schema.Type<S>>>(
   Schema.decodeUnknownEffect(Schema.fromJsonString(schema), { onExcessProperty: "error" })(
     content.slice(kind.length + 6),
   ).pipe(Effect.mapError((error) => fail(`Malformed ${kind} marker: ${String(error)}`)));
-const allMessages = (api: DiscordApi, channel: string, checkpoint?: string) =>
-  Effect.gen(function* () {
-    const seen: DiscordMessage[] = [];
-    for (;;) {
-      const page = yield* api.listMessages(channel, seen.at(-1)?.id);
-      const newer = checkpoint
-        ? page.filter((message) => BigInt(message.id) > BigInt(checkpoint))
-        : page;
-      seen.push(...newer);
-      if (page.length < 100 || newer.length < page.length) return seen;
-    }
-  });
 const same = (a: object, b: object) => JSON.stringify(a) === JSON.stringify(b);
 const sameRecord = (a: ChannelRecord, b: ChannelRecord) =>
   JSON.stringify(Object.entries(a).toSorted(([left], [right]) => left.localeCompare(right))) ===
@@ -189,7 +181,10 @@ export const indexRecords = (api: DiscordApi, stateId: string, botId: string) =>
       const record = yield* parse(recordSchema, message.content, "record");
       if (
         (record.phase === "idle") !== (record.high === null && record.before === null) ||
-        (record.phase !== "idle" && (record.high === null || record.before === null))
+        (record.phase !== "idle" && (record.high === null || record.before === null)) ||
+        (record.recentBefore === undefined) !== (record.recentFloor === undefined) ||
+        (record.recentBefore === undefined) !== (record.recentSince === undefined) ||
+        (record.recentReset !== undefined && record.recentBefore === undefined)
       )
         return yield* fail("Invalid record phase/cursors");
       if (records.has(record.channel))
@@ -249,8 +244,7 @@ const writeOnce = (
     );
     if (existing.some((m) => m.content !== content)) return yield* fail("Divergent journal write");
     if (existing.length) return void 0;
-    const result = yield* Effect.exit(api.createMessage(thread, content));
-    if (Exit.isSuccess(result)) return void 0;
+    yield* Effect.exit(api.createMessage(thread, content));
     const reconciled = (yield* allMessages(api, thread, checkpoint)).filter(
       (m) => owned(m, botId) && identity(m.content),
     );

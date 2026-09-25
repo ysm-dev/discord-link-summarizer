@@ -82,7 +82,7 @@ for (const [state, missing] of [
       };
       const settings = yield* decodeConfig(config, "/home/test");
       expect((yield* Effect.flip(stalledWork(api, settings, journal, post.id))).message).toContain(
-        state === "done" ? "Unverified terminal" : "Unverified Given-up",
+        "Invalid Summary Thread",
       );
     }),
   );
