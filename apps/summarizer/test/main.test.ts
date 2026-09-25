@@ -44,7 +44,7 @@ it.effect("decodes config before the lock and reports contention and lock errors
       ).toBe(1);
       writeFileSync(
         file,
-        'opencode:\n  directory: /workspace\n  agent: summarizer\nsince: 2026-09-01T00:00:00Z\nstate_channel_id: "20"\nchannels: []\n',
+        "opencode:\n  directory: /workspace\n  agent: summarizer\nsince: 2026-09-01T00:00:00Z\nchannels: []\n",
       );
       expect(yield* invoke(["--config", file], env, dir, skipped)).toBe(0);
       const { logs, layer } = captureLogs();
@@ -103,7 +103,6 @@ it.effect("returns the Run's successful exit code through an acquired lock", () 
     const dir = mkdtempSync(join(tmpdir(), "summarizer-run-invoke-"));
     const file = join(dir, "config.yml");
     const discord = new FakeDiscord();
-    discord.addChannel("20");
     const at = Date.parse("2026-09-25T12:00:00Z");
     yield* TestClock.setTime(at);
     const http = HttpClient.make((request, url) =>
@@ -111,16 +110,14 @@ it.effect("returns the Run's successful exit code through an acquired lock", () 
         .execute(request)
         .pipe(
           Effect.tap(() =>
-            url.pathname === "/api/v10/channels/20/messages"
-              ? TestClock.adjust("2 millis")
-              : Effect.void,
+            url.pathname === "/api/v10/users/@me" ? TestClock.adjust("2 millis") : Effect.void,
           ),
         ),
     );
     try {
       writeFileSync(
         file,
-        'opencode:\n  directory: /workspace\n  agent: summarizer\nsince: 2026-09-01T00:00:00Z\nstate_channel_id: "20"\nrun_budget: 1 millis\nchannels: []\n',
+        "opencode:\n  directory: /workspace\n  agent: summarizer\nsince: 2026-09-01T00:00:00Z\nrun_budget: 1 millis\nchannels: []\n",
       );
       expect(
         yield* invoke(

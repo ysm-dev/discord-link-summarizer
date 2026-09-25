@@ -141,7 +141,6 @@ type Publisher = {
 class AttemptFailure extends Data.TaggedError("AttemptFailure")<{ readonly message: string }> {}
 type AttemptContext = {
   readonly api: DiscordApi;
-  readonly stateId: string;
   readonly bot: string;
   readonly journal: Journal;
   readonly item: Work;
@@ -149,7 +148,7 @@ type AttemptContext = {
 
 const resetMissingReady = (context: AttemptContext, thread: DiscordMessage["thread"]) =>
   !thread && context.journal.entries.get(context.item.id)?.state === "ready"
-    ? journalStatus(context.api, context.stateId, context.bot, context.journal, {
+    ? journalStatus(context.journal, {
         id: context.item.id,
         state: "pending",
       })
@@ -204,7 +203,6 @@ const verifyGivenUp = (api: DiscordApi, channel: string, id: string, bot: string
 
 const settleReady = (
   api: DiscordApi,
-  stateId: string,
   bot: string,
   journal: Journal,
   id: string,
@@ -222,7 +220,7 @@ const settleReady = (
       yield* api.deleteMessage(thread, message.id);
     yield* rename(api, thread, name);
     yield* verifyCommitted(api, journal.record.channel, id, bot, journal);
-    return yield* journalStatus(api, stateId, bot, journal, { id, state: "terminal" });
+    return yield* journalStatus(journal, { id, state: "terminal" });
   });
 
 const failed = (
@@ -252,11 +250,11 @@ const finishFailure = (
   reason: string,
 ) =>
   Effect.gen(function* () {
-    const { api, stateId, bot, journal, item } = context;
+    const { api, bot, journal, item } = context;
     yield* failed(api, item.id, note, number, maximum, name, reason);
     if (number !== maximum) return journal;
     yield* verifyGivenUp(api, item.channel.id, item.id, bot);
-    return yield* journalStatus(api, stateId, bot, journal, {
+    return yield* journalStatus(journal, {
       id: item.id,
       state: "terminal",
     });
@@ -274,7 +272,7 @@ const attempt = (
   number: number,
 ) =>
   Effect.gen(function* () {
-    const { api, stateId, bot, journal, item } = context;
+    const { api, bot, journal, item } = context;
     const thread = item.id;
     const value: Note = { kind: "started", number, maximum: settings.maxAttempts };
     const note = yield* writeMessage(api, thread, formatNote(value));
@@ -330,12 +328,12 @@ const attempt = (
       const parts: DiscordMessage[] = [];
       for (const content of splitSummary(result.text))
         parts.push(yield* writeMessage(api, thread, content));
-      const ready = yield* persistReady(api, stateId, bot, journal, item.id, parts);
+      const ready = yield* persistReady(api, bot, journal, item.id, parts);
       for (const old of [...notesOf(messages, bot).map((entry) => entry.message), note])
         yield* api.deleteMessage(thread, old.id);
       yield* rename(api, thread, name);
       yield* verifyCommitted(api, item.channel.id, item.id, bot, ready);
-      return yield* journalStatus(api, stateId, bot, ready, { id: item.id, state: "terminal" });
+      return yield* journalStatus(ready, { id: item.id, state: "terminal" });
     }).pipe(Effect.onError(() => interrupted(api, thread, note, value)));
   });
 
@@ -344,7 +342,6 @@ export const workOn = (
   api: DiscordApi,
   openCode: Client,
   publication: Publisher,
-  stateId: string,
   bot: string,
   settings: Settings,
   initial: Journal,
@@ -360,8 +357,7 @@ export const workOn = (
       ),
     );
     const link = source && linkFromPost(source, bot);
-    if (!link)
-      return yield* journalStatus(api, stateId, bot, journal, { id: item.id, state: "terminal" });
+    if (!link) return yield* journalStatus(journal, { id: item.id, state: "terminal" });
     const name = threadTitle(source.content, link);
     const freshThread = yield* existingThread(api, source.id, item.channel.id);
     if (changedThread(source, freshThread, bot))
@@ -371,17 +367,17 @@ export const workOn = (
       Date.parse(source.timestamp) < DateTime.toEpochMillis(item.channel.since) &&
       linkPostState(freshThread, bot) !== "in-progress"
     )
-      return yield* journalStatus(api, stateId, bot, journal, { id: item.id, state: "terminal" });
-    journal = yield* resetMissingReady({ api, stateId, bot, journal, item }, freshThread);
-    const context = { api, stateId, bot, journal, item };
+      return yield* journalStatus(journal, { id: item.id, state: "terminal" });
+    journal = yield* resetMissingReady({ api, bot, journal, item }, freshThread);
+    const context = { api, bot, journal, item };
     let thread = yield* threadFor(api, { ...source, thread: freshThread }, name, bot);
     if (freshThread && !thread)
-      return yield* journalStatus(api, stateId, bot, journal, { id: item.id, state: "terminal" });
+      return yield* journalStatus(journal, { id: item.id, state: "terminal" });
     if (thread && linkPostState(thread, bot) !== "in-progress") {
       if (linkPostState(thread, bot) === "done")
         yield* verifyCommitted(api, item.channel.id, item.id, bot, journal);
       else yield* verifyGivenUp(api, item.channel.id, item.id, bot);
-      return yield* journalStatus(api, stateId, bot, journal, { id: item.id, state: "terminal" });
+      return yield* journalStatus(journal, { id: item.id, state: "terminal" });
     }
     if (!thread) return journal;
     if (thread.thread_metadata.archived)
@@ -389,7 +385,7 @@ export const workOn = (
     const messages = yield* history(api, thread.id);
     const ready = journal.entries.get(item.id);
     if (ready?.state === "ready")
-      return yield* settleReady(api, stateId, bot, journal, item.id, thread.id, name, messages);
+      return yield* settleReady(api, bot, journal, item.id, thread.id, name, messages);
     const notes = notesOf(messages, bot);
     const status = attemptStatus(
       notes,
@@ -401,7 +397,7 @@ export const workOn = (
     if (status.giveUp) {
       yield* rename(api, thread.id, `⚠️ ${name}`);
       yield* verifyGivenUp(api, item.channel.id, item.id, bot);
-      return yield* journalStatus(api, stateId, bot, journal, { id: item.id, state: "terminal" });
+      return yield* journalStatus(journal, { id: item.id, state: "terminal" });
     }
     return yield* attempt(
       context,

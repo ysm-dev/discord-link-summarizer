@@ -16,7 +16,6 @@ export const config = `
 opencode:
   directory: /workspace
   agent: summarizer
-state_channel_id: "20"
 since: 2026-09-01T00:00:00Z
 delete_sessions: true
 channels:
@@ -105,22 +104,14 @@ export const openRecord = (discord: FakeDiscord) =>
   Effect.gen(function* () {
     const api = yield* fakeApi(discord);
     const settings = yield* decodeConfig(config, "/home/test");
-    const journal = (yield* openChannelRecord(
-      api,
-      "20",
-      "10",
-      settings.since,
-      settings.horizon,
-      "bot",
-      false,
-    )).journal!;
+    const journal = yield* openChannelRecord("10", settings.since, settings.horizon);
     return { api, journal };
   });
 
 export const seedJournal = (discord: FakeDiscord, post: { id: string }) =>
   Effect.gen(function* () {
-    const { api, journal } = yield* openRecord(discord);
-    return yield* journalPage(api, "bot", journal, "fixture", [post.id]);
+    const { journal } = yield* openRecord(discord);
+    return yield* journalPage(journal, [post.id]);
   });
 
 export const waitForFault = (discord: FakeDiscord, remaining = 0) =>
@@ -136,7 +127,6 @@ export const stalledWork = (api: DiscordApi, settings: Settings, journal: Journa
     api,
     { run: () => Effect.never },
     { publish: () => Effect.never },
-    "20",
     "bot",
     settings,
     journal,

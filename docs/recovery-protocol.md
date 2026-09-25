@@ -1,7 +1,7 @@
 # Durable Run recovery
 
-This specifies the operator-approved corrections to issue #1 and ADR-0007.
-Tickets #10 and #6 implement the protocol. Discord remains the progress record.
+This specifies durable discovery and publication recovery. [ADR-0010](adr/0010-local-sqlite-progress.md)
+replaces the original Discord journals with local SQLite; Summary Threads remain in Discord.
 
 ## Machine lock
 
@@ -23,18 +23,14 @@ Cross-machine writers and non-cooperating programs are outside this contract.
 
 ## Channel Records
 
-`state_channel_id` identifies a dedicated Discord text channel, distinct from
-Watched Channels. The bot needs View Channel, Read Message History, Send Messages,
-Create Public Threads, Send Messages in Threads, and Manage Threads there. This
-supports announcement Watched Channels without relying on standalone threads in
-announcement channels.
-
-Each Watched Channel has a bot-authored record message and a public journal
-thread started from that message. The shared message/thread ID is its durable
-address. Index the state channel's complete history, checking author, version,
-and Watched Channel identity. Ambiguous records, malformed records, or a missing
-journal whose parent survives fail visibly. Dry-run reads records but never
-initializes them; it reports an uninitialized channel's proposed start.
+Channel Records live in `~/.local/state/discord-link-summarizer/progress.sqlite`.
+The first real Run creates the private directory and database automatically.
+There is no state channel, state-channel ID or bookkeeping thread. The database
+is separate from the private OpenCode transcript database and is bound to the
+dedicated bot identity. Schema, ownership and malformed-record failures stop the
+Run before Discord mutations. Every configured readable channel's record is
+decoded during preflight. Dry-run opens existing progress read-only, never
+creates a progress file and reports an uninitialized channel's proposed start.
 
 A Channel Record preserves:
 
@@ -47,17 +43,18 @@ A Channel Record preserves:
 - whether the epoch is being discovered or worked.
 
 Message IDs are compared as integers. The settled floor is exclusive. The
-journal records deterministic page keys and every eligible Link Post ID on each
-page. A Link Post may be pending, ready for commit, or terminal. Split records to
-respect Discord's message limit. Duplicate identical page records can be
-reconciled; divergent records must not be guessed away.
+journal records every eligible Link Post ID on each page. A Link Post may be
+pending, ready for commit, or terminal. Each change reads the latest channel
+state and commits it in one SQLite transaction. Replayed pages deduplicate IDs
+without replacing existing statuses; concurrent Attempts preserve each other's
+updates. Records and manifests have no Discord message-size limit.
 
 ## Discovery and ordering
 
 1. Snapshot an epoch's highest actual message ID, then scan newest-to-oldest,
    at most 100 messages per request, down to its settled floor.
-2. Persist every eligible ID in a page before checkpointing the next cursor.
-   A lost reply requires read reconciliation before any cursor advances.
+2. Commit every eligible ID in a page before checkpointing the next cursor.
+   If interrupted between those commits, replay the page idempotently.
 3. Continue an unfinished scan in the next Run when the budget is exhausted.
    Do not start newer work while an undiscovered older interval could contain
    eligible Link Posts.
@@ -67,7 +64,7 @@ reconciled; divergent records must not be guessed away.
    references, not a substitute for thread state and ownership checks.
 5. Advance the settled floor only after every ID in the epoch is verified Done,
    Given up, deleted, excluded, or owned by someone else's thread. Persist that
-   checkpoint before garbage-collecting settled journal entries.
+   checkpoint and clear settled journal entries in the same transaction.
 
 A younger successful Attempt cannot conceal an older unresolved ID. A failed
 or ambiguous state write never advances discovery or settlement. Repeated Runs
@@ -130,10 +127,39 @@ Discord nonce deduplication is supplementary, not a durable claim or journal.
 - Deleting a completed Summary Thread is detected while its source is journaled
   or within the rechecked Horizon. Arbitrary ancient deletions require explicit
   backfill; bounded incremental discovery cannot notice every historical edit.
-- Deleting both a Channel Record parent and its journal removes all evidence of
-  onboarding. This is a destructive reset. Detecting it automatically requires
-  another retained locator; preserve the dedicated state channel during recovery.
+- Losing the SQLite database loses onboarding, pending discovery and READY
+  manifests. Restore a backup or explicitly rebuild the intended history as below.
 - Removed Watched Channels are paused. Restore them to the configuration to
   finish their retained work; removing a channel must not delete its records.
 - Dry-run must identify partial discovery rather than present partial counts as
   complete when the Run deadline prevents finishing a read-only scan.
+
+## Backup and machine-loss recovery
+
+Back up `progress.sqlite` separately from `OPENCODE_DB`. Use SQLite's online
+backup operation for a consistent snapshot, for example:
+
+```sh
+sqlite3 "$HOME/.local/state/discord-link-summarizer/progress.sqlite" ".backup '/private/path/progress.sqlite'"
+```
+
+Keep the backup private and outside Git. To restore, pause the scheduler, wait
+for any active Run to finish and stop manual Runs. Restore the backup at the
+same path under the same Unix user, with directory mode `0700` and file mode
+`0600`. Run dry-run and verify one test channel before resuming. A restored
+older backup can replay work, so source/thread ownership and actual summaries
+are always checked before posting or committing.
+
+Without a backup, choose an explicit recovery `since` at or before the earliest
+unfinished work and temporarily widen `horizon` to cover the entire interval
+from that Since to now. The default seven-day Horizon is not enough for an
+older backlog. A fresh database rescans that interval and adopts existing
+bot-owned In-progress threads, including archived ones. Verified Done and
+Given-up threads are reused. Lost READY manifests cannot establish whether
+unfinished draft parts were complete; regeneration may be needed. Restore the
+normal Horizon after onboarding; the persisted floor retains unfinished work.
+
+The rollout was paused before this change. Existing configurations must remove
+`state_channel_id` (unknown keys are rejected). Legacy Discord journals are not
+automatically imported: if a deployment already used them, retain them while
+rebuilding and verifying the intended recovery interval as above.

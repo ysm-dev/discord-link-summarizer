@@ -1,8 +1,8 @@
-import { expect, it } from "@effect/vitest";
+import { expect, it } from "./progress-fixture.ts";
 import { DateTime, Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
 import { journalPage, journalStatus } from "../src/channel-record.ts";
-import { fakeApi } from "./discord-api-fixture.ts";
+import { ProgressStore } from "../src/progress-store.ts";
 import { readyManifest } from "./ready-fixture.ts";
 import {
   at,
@@ -73,12 +73,11 @@ it.effect(
       const ready = discord.addMessage("10", "https://example.test/ready", at - 3 * day);
       const current = discord.addMessage("10", "https://example.test/current", at - day);
       const journal = yield* seedJournal(discord, pending);
-      const api = yield* fakeApi(discord);
-      const marked = yield* journalPage(api, "bot", journal, "started", [started.id, ready.id]);
+      const marked = yield* journalPage(journal, [started.id, ready.id]);
       discord.addThread("10", started.id, "⏳ Started", "bot", true);
       discord.addThread("10", ready.id, "⏳ Ready", "bot", true);
       const part = discord.addMessage(ready.id, "Verified summary", at, "bot");
-      yield* journalStatus(api, "20", "bot", marked, readyManifest(ready.id, [part]));
+      yield* journalStatus(marked, readyManifest(ready.id, [part]));
       const { logs, layer } = captureLogs();
       const messages = structuredClone(discord.messages);
       const threads = structuredClone(discord.threads);
@@ -118,10 +117,9 @@ it.effect("rebuilds a deleted old READY thread from a cleared manifest", () =>
     const { discord, invokeWith } = yield* setup();
     const source = discord.addMessage("10", "https://example.test/old-ready", at - 9 * day);
     const journal = yield* seedJournal(discord, source);
-    const api = yield* fakeApi(discord);
     discord.addThread("10", source.id, "⏳ Old", "bot", true);
     const oldPart = discord.addMessage(source.id, "Deleted draft", at, "bot");
-    yield* journalStatus(api, "20", "bot", journal, readyManifest(source.id, [oldPart]));
+    yield* journalStatus(journal, readyManifest(source.id, [oldPart]));
     discord.threads.delete(source.id);
     discord.messages.delete(source.id);
     const backfill = config.replace("2026-09-01T00:00:00Z", new Date(at - 10 * day).toISOString());
@@ -168,21 +166,24 @@ it.effect("distinct deleted completions recover across an interrupted reset", ()
     const first = discord.addMessage("10", "https://example.test/first", at - 4 * day);
     const second = discord.addMessage("10", "https://example.test/second", at - 3 * day);
     expect(yield* invoke()).toBe(0);
-    const { journal } = yield* openRecord(discord);
     discord.threads.delete(first.id);
     discord.messages.delete(first.id);
-    discord.faults.push({
-      method: "POST",
-      path: `/channels/${journal.parent}/messages`,
-      pause: 20 * 60_000,
-    });
-    const interrupted = yield* Effect.forkChild(invoke());
-    yield* waitForFault(discord);
-    yield* TestClock.adjust("20 minutes");
-    expect(yield* Fiber.join(interrupted)).toBe(0);
-    const { api, journal: paused } = yield* openRecord(discord);
-    const withSecond = yield* journalPage(api, "bot", paused, "seed/second", [second.id]);
-    yield* journalStatus(api, "20", "bot", withSecond, { id: second.id, state: "terminal" });
+    const store = yield* ProgressStore;
+    const interrupted = {
+      ...store,
+      change: (channel: string, f: (stored: string | undefined) => string) =>
+        store.change(channel, (stored) => {
+          if (stored?.includes('"state":"pending"')) throw new Error("interrupted reset");
+          return f(stored);
+        }),
+    };
+    expect(
+      (yield* Effect.flip(invoke().pipe(Effect.provideService(ProgressStore, interrupted))))
+        .message,
+    ).toContain("interrupted reset");
+    const { journal: paused } = yield* openRecord(discord);
+    const withSecond = yield* journalPage(paused, [second.id]);
+    yield* journalStatus(withSecond, { id: second.id, state: "terminal" });
     discord.addThread("10", first.id, "⏳ Reclaimed", "bot", true);
     discord.threads.delete(second.id);
     discord.messages.delete(second.id);
@@ -234,8 +235,7 @@ it.effect("fresh admission skips a deleted or edited journaled source", () =>
     const edited = discord.addMessage("10", "https://example.test/edited", at - 2000);
     const deleted = discord.addMessage("10", "https://example.test/deleted", at - 1000);
     const journal = yield* seedJournal(discord, edited);
-    const api = yield* fakeApi(discord);
-    yield* journalPage(api, "bot", journal, "deleted", [deleted.id]);
+    yield* journalPage(journal, [deleted.id]);
     discord.messages.set(
       "10",
       discord.messages

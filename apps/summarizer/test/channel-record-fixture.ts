@@ -1,13 +1,12 @@
 import { DateTime, Duration, Effect } from "effect";
-import * as TestClock from "effect/testing/TestClock";
-import type { DiscordApi } from "../src/discord-client.ts";
+import { TestClock } from "effect/testing";
 import {
   journalPage,
   journalStatus,
   openChannelRecord,
-  type Journal,
+  settleRecord,
 } from "../src/channel-record.ts";
-import { beginScan, scanPages, settleRecord } from "../src/channel-discovery.ts";
+import { beginScan, scanPages } from "../src/channel-discovery.ts";
 import { FakeDiscord } from "./discord-fake.ts";
 import { fakeApi } from "./discord-api-fixture.ts";
 
@@ -19,50 +18,21 @@ export const prepare = Effect.gen(function* () {
   const fake = new FakeDiscord();
   fake.addChannel("10");
   fake.addChannel("20");
-  const api = yield* fakeApi(fake);
-  return { fake, api };
+  return { fake, api: yield* fakeApi(fake) };
 });
-export const open = (api: DiscordApi) =>
-  openChannelRecord(api, "20", "10", since, horizon, "bot", false);
-export const journaledLink = (fake: FakeDiscord, api: DiscordApi, at: number) =>
+export const open = () => openChannelRecord("10", since, horizon);
+export const journaledLink = (fake: FakeDiscord, at: number) =>
   Effect.gen(function* () {
     const source = fake.addMessage("10", "https://one.test", at);
-    const journal: Journal = yield* journalPage(api, "bot", (yield* open(api)).journal!, "manual", [
-      source.id,
-    ]);
+    const journal = yield* journalPage(yield* open(), [source.id]);
     return { source, journal };
   });
-export const removeEntriesContaining = (fake: FakeDiscord, thread: string, fragment: string) => {
-  fake.messages.set(
-    thread,
-    (fake.messages.get(thread) ?? []).filter((m) => !m.content.includes(fragment)),
-  );
-};
-export const hundredLinks = (fake: FakeDiscord) =>
-  Array.from(
-    { length: 100 },
-    (_, index) => fake.addMessage("10", `https://example.test/${index}`, now - 1000 + index).id,
-  );
-export const twoLinks = (fake: FakeDiscord) =>
-  [
-    fake.addMessage("10", "https://one.test", now - 100),
-    fake.addMessage("10", "https://two.test", now - 50),
-  ] as const;
-export const loseJournalReply = (fake: FakeDiscord, thread: string, after: boolean) => {
-  fake.faults.push({ method: "POST", path: `/channels/${thread}/messages`, drop: true, after });
-};
 export const settledDone = Effect.gen(function* () {
   const { fake, api } = yield* prepare;
   const post = fake.addMessage("10", "https://one.test", now - 100);
   fake.addThread("10", post.id, "Done", "bot", true);
-  let journal: Journal = yield* scanPages(
-    api,
-    "20",
-    "bot",
-    yield* beginScan(api, "20", (yield* open(api)).journal!),
-    1,
-  );
-  journal = yield* journalStatus(api, "20", "bot", journal, { id: post.id, state: "terminal" });
-  journal = yield* settleRecord(api, "20", journal);
+  let journal = yield* scanPages(api, "bot", yield* beginScan(api, yield* open()), 1);
+  journal = yield* journalStatus(journal, { id: post.id, state: "terminal" });
+  journal = yield* settleRecord(journal);
   return { fake, api, post, journal };
 });

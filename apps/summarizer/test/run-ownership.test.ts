@@ -1,4 +1,4 @@
-import { expect, it } from "@effect/vitest";
+import { expect, it } from "./progress-fixture.ts";
 import { Effect } from "effect";
 import { openChannelRecord, type Journal } from "../src/channel-record.ts";
 import { decodeConfig, type Settings } from "../src/config.ts";
@@ -19,7 +19,6 @@ const perform = (
     api,
     { run: () => outcome },
     { publish: () => Effect.succeed({ type: "published" as const, id: "ses_one" }) },
-    "20",
     "bot",
     settings,
     journal,
@@ -35,17 +34,8 @@ it.effect("never adopts a foreign-owned Summary Thread", () =>
     expect(yield* invoke()).toBe(0);
     expect(discord.threads.get(post.id)?.name).toBe("⏳ Discussion");
     expect(openCode.requests.filter((request) => request === "POST /api/session")).toHaveLength(0);
-    const api = yield* fakeApi(discord);
     const settings = yield* decodeConfig(config, "/home/test");
-    const journal = (yield* openChannelRecord(
-      api,
-      "20",
-      "10",
-      settings.since,
-      settings.horizon,
-      "bot",
-      true,
-    )).journal!;
+    const journal = yield* openChannelRecord("10", settings.since, settings.horizon);
     expect(BigInt(journal.record.floor)).toBeGreaterThanOrEqual(BigInt(post.id));
   }),
 );
@@ -137,6 +127,7 @@ it.effect("propagates a forbidden source read during terminal verification", () 
 
 it.effect("a lost rename reply requires the expected archived thread and title", () =>
   Effect.gen(function* () {
+    let offset = 0;
     for (const [changed, rejectPrimary] of [
       [{ thread_metadata: { archived: false } }, false],
       [{ name: "Other" }, false],
@@ -145,7 +136,7 @@ it.effect("a lost rename reply requires the expected archived thread and title",
       [{ name: "Other" }, true],
     ] as const) {
       const { discord } = yield* setup();
-      const post = discord.addMessage("10", "Title https://example.test/a", at - 1000);
+      const post = discord.addMessage("10", "Title https://example.test/a", at - 1000 + offset++);
       discord.addThread("10", post.id, "⏳ Title", "bot");
       const journal = yield* seedJournal(discord, post);
       const base = yield* fakeApi(discord);

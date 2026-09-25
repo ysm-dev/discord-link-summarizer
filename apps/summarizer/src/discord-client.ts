@@ -95,17 +95,14 @@ export interface DiscordApi {
   ) => Effect.Effect<DiscordThread, DiscordFailure>;
 }
 
-/** Read complete channel history, stopping at an exclusive durable checkpoint. */
-export const allMessages = (client: DiscordApi, channel: string, checkpoint?: string) =>
+/** Read the complete Summary Thread for publication reconciliation. */
+export const allMessages = (client: DiscordApi, channel: string) =>
   Effect.gen(function* () {
     const seen: DiscordMessage[] = [];
     for (;;) {
       const page = yield* client.listMessages(channel, seen.at(-1)?.id);
-      const newer = checkpoint
-        ? page.filter((message) => BigInt(message.id) > BigInt(checkpoint))
-        : page;
-      seen.push(...newer);
-      if (page.length < 100 || newer.length < page.length) return seen;
+      seen.push(...page);
+      if (page.length < 100) return seen;
     }
   });
 

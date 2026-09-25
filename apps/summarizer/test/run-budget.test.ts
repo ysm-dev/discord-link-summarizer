@@ -1,4 +1,4 @@
-import { expect, it } from "@effect/vitest";
+import { expect, it } from "./progress-fixture.ts";
 import { Clock, Effect, Fiber, Logger } from "effect";
 import { TestClock } from "effect/testing";
 import { decodeConfig } from "../src/config.ts";
@@ -209,11 +209,9 @@ it.effect("a slow first history page leaves a second channel for the next Run", 
 it.effect("bounds a stalled Discord read at the whole-Run deadline", () =>
   Effect.gen(function* () {
     const { discord, invoke, getStarted } = yield* setup();
-    discord.faults.push({ method: "GET", path: "/channels/20/messages?", pause: 40 * 60_000 });
+    discord.faults.push({ method: "GET", path: "/channels/10", pause: 40 * 60_000 });
     const fiber = yield* Effect.forkChild(invoke());
-    yield* waitFor(() =>
-      discord.requests.some((request) => request.path.startsWith("/channels/20/messages?")),
-    );
+    yield* waitFor(() => discord.requests.some((request) => request.path === "/channels/10"));
     yield* TestClock.adjust("31 minutes");
     expect(yield* Fiber.join(fiber)).toBe(1);
     expect(getStarted()).toBe(0);

@@ -30,7 +30,6 @@ const channelSchema = Schema.Struct({
 const configSchema = Schema.Struct({
   opencode: Schema.Struct({ directory: nonEmpty, agent: nonEmpty }),
   since,
-  state_channel_id: snowflake,
   command: Schema.optionalKey(nonEmpty),
   horizon: Schema.optionalKey(duration),
   concurrency: Schema.optionalKey(Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0))),
@@ -49,7 +48,7 @@ interface ChannelSettings {
 }
 
 export interface Settings {
-  readonly stateChannelId: string;
+  readonly progressDatabase: string;
   readonly opencode: { readonly directory: string; readonly agent: string };
   readonly since: DateTime.Utc;
   readonly command: string;
@@ -92,15 +91,10 @@ export const decodeConfig = (text: string, home: string): Effect.Effect<Settings
     if (new Set(config.channels.map((channel) => channel.id)).size !== config.channels.length) {
       return yield* new ConfigError({ message: "Duplicate channel ID" });
     }
-    if (config.channels.some((channel) => channel.id === config.state_channel_id)) {
-      return yield* new ConfigError({
-        message: "State channel must be distinct from Watched Channels",
-      });
-    }
     const command = config.command ?? "summarize";
     const retryWaits = config.retry_waits ?? [Duration.minutes(10), Duration.hours(1)];
     return {
-      stateChannelId: config.state_channel_id,
+      progressDatabase: `${home}/.local/state/discord-link-summarizer/progress.sqlite`,
       opencode: {
         directory: expandHome(config.opencode.directory, home),
         agent: config.opencode.agent,

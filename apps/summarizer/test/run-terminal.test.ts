@@ -1,4 +1,4 @@
-import { expect, it } from "@effect/vitest";
+import { expect, it } from "./progress-fixture.ts";
 import { Effect } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 import { persistReady } from "../src/channel-record.ts";
@@ -163,7 +163,7 @@ const tamperedReady = (name: string) =>
     const api = yield* fakeApi(discord);
     discord.addThread("10", post.id, name, "bot", true);
     const part = discord.addMessage(post.id, "summary", at, "bot");
-    yield* persistReady(api, "20", "bot", journal, post.id, [part]);
+    yield* persistReady(api, "bot", journal, post.id, [part]);
     discord.messages.set(post.id, [{ ...part, content: "tampered" }]);
     return { discord, invoke, openCode, post };
   });
