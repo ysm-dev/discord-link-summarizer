@@ -2,5 +2,7 @@
 opencode:
   directory: /Users/chris/git/ysmdev/translate
   agent: summarizer
-since: "2026-09-25T00:00:00+09:00"
-channels: []
+since: "2026-09-25T20:14:22+09:00"
+channels:
+  - id: "1479037383591596102"
+    label: hn-100

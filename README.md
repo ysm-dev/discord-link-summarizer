@@ -26,7 +26,7 @@ The entry shim provides `BunServices.layer` and runs `invoke` with `BunRuntime.r
 
 **Rollout remains paused pending test-channel verification and human setup.** The Run uses a one-machine OS lock and stores durable [Channel Records](docs/recovery-protocol.md) in an automatically created SQLite file at `~/.local/state/discord-link-summarizer/progress.sqlite`. No extra Discord channel or bookkeeping messages are needed. Back up this file for machine-loss recovery; see [ADR-0010](docs/adr/0010-local-sqlite-progress.md). [ADR-0008](docs/adr/0008-isolated-execution-shared-terminal-transcripts.md) resolves session ownership: private executions use a separate persistent DB and independently provisioned credentials; terminal transcripts are exported and imported into the already-running interactive service at the translate location for eventual visibility. Active private sessions do not appear in the interactive list. The old `shell` glob allowlist is unsafe and must never be installed.
 
-The committed `config.yml` has no Watched Channels. Set `since` to the intended rollout instant with an explicit timezone offset; add one Watched Channel first, then expand only after checking its dry run and results. Remove `state_channel_id` from older configs; it is no longer supported. For example:
+The committed `config.yml` starts with `hn-100` as the single test Watched Channel, activated at `2026-09-25T20:14:22+09:00`. Verify its dry run and results before adding channels. For another deployment, set `since` to the intended rollout instant with an explicit timezone offset. Remove `state_channel_id` from older configs; it is no longer supported. For example:
 
 ```yaml
 channels:
