@@ -183,9 +183,9 @@ it.effect("an empty archived continuation fails as a missing cursor", () =>
       status: 200,
       body: { threads: [], has_more: true },
     });
-    expect((yield* Effect.flip(adoptInProgress(api, "bot", journal, "guild"))).message).toContain(
-      "cursor",
-    );
+    expect(
+      (yield* Effect.flip(adoptInProgress(api, "20", "bot", journal, "guild", Infinity))).message,
+    ).toContain("cursor");
   }),
 );
 
@@ -379,6 +379,7 @@ it.effect(
       const { fake, api } = yield* prepare;
       const journal = (yield* open(api)).journal!;
       const parent = fake.messages.get("20")!.find((m) => m.id === journal.parent)!;
+      const originalThread = fake.threads.get(journal.parent)!;
       for (const thread of [
         undefined,
         { ...parent.thread!, owner_id: "human" },
@@ -391,28 +392,22 @@ it.effect(
         ).toContain("foreign");
       }
       fake.messages.set("20", [parent]);
-      fake.faults.push({
-        method: "GET",
-        path: `/channels/${journal.parent}`,
-        status: 200,
-        body: { id: "999", type: 11 },
-      });
-      expect(
-        (yield* Effect.flip(readJournal(api, "20", "bot", journal.parent, journal.record))).message,
-      ).toContain("foreign");
+      for (const change of [{ id: "999" }, { type: 0 }, { owner_id: "human" }]) {
+        fake.faults.push({
+          method: "GET",
+          path: `/channels/${journal.parent}`,
+          status: 200,
+          body: { ...originalThread, type: 11, ...change },
+        });
+        expect(
+          (yield* Effect.flip(readJournal(api, "20", "bot", journal.parent, journal.record)))
+            .message,
+        ).toContain("foreign");
+      }
       fake.faults.push({ method: "GET", path: `/channels/${journal.parent}`, status: 403 });
       expect(
         yield* Effect.flip(readJournal(api, "20", "bot", journal.parent, journal.record)),
       ).toMatchObject({ kind: "forbidden" });
-      fake.faults.push({
-        method: "GET",
-        path: `/channels/${journal.parent}`,
-        status: 200,
-        body: { id: journal.parent, type: 0 },
-      });
-      expect(
-        (yield* Effect.flip(readJournal(api, "20", "bot", journal.parent, journal.record))).message,
-      ).toContain("foreign");
     }),
 );
 

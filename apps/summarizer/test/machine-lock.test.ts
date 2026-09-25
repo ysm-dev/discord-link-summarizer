@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect } from "effect";
 import { afterAll, vi } from "vitest";
-import { machineLockPath, withMachineLock } from "../src/machine-lock.ts";
+import { withMachineLock } from "../src/machine-lock.ts";
 
 const lockPath = () => join(mkdtempSync(join(tmpdir(), "dls-lock-")), "private", "run.lock");
 const spawnCode = (
@@ -87,7 +87,6 @@ it.effect("open failures and helper errors are reported without entering the Run
     expect(
       yield* Effect.flip(withMachineLock(Effect.succeed("entered"), "/dev/null/private/run.lock")),
     ).toMatchObject({ _tag: "MachineLockError" });
-    expect(machineLockPath()).toContain("discord-link-summarizer/run.lock");
     expect(yield* withMachineLock(Effect.succeed("entered"), path)).toBe("entered");
     vi.stubGlobal("Bun", { spawn: () => ({ exited: Promise.resolve(2) }) });
     expect(

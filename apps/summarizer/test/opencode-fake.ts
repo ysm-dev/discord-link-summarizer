@@ -30,6 +30,7 @@ export const session = (id = "ses_one", outcome?: string, updated = 100) => ({
 });
 
 interface FakeOptions {
+  readonly acceptPrivatePassword?: boolean;
   readonly fault?:
     | "agent"
     | "commands"
@@ -51,6 +52,7 @@ interface FakeOptions {
   readonly agentModel?: boolean;
   readonly noAgent?: boolean;
   readonly hangAgent?: boolean;
+  readonly hangCreate?: boolean;
   readonly hangCommand?: boolean;
   readonly holdTerminal?: boolean;
   readonly slowList?: boolean | undefined;
@@ -70,6 +72,9 @@ interface FakeOptions {
   readonly payloads?: Partial<Record<NonNullable<FakeOptions["fault"]>, object>>;
   readonly exports?: Readonly<Record<string, object>>;
 }
+
+const hungCreation = (config: FakeOptions, method: string, path: string) =>
+  config.hangCreate && method === "POST" && path === "/api/session";
 
 class FakeServer {
   readonly requests: string[] = [];
@@ -266,11 +271,15 @@ class FakeServer {
 
   readonly http = HttpClient.make((request, url) => {
     this.requests.push(`${request.method} ${url.pathname}${url.search}`);
-    if (request.headers["authorization"] !== `Basic ${btoa("opencode:secret")}`)
+    if (
+      !this.config.acceptPrivatePassword &&
+      request.headers["authorization"] !== `Basic ${btoa("opencode:secret")}`
+    )
       throw new Error("Unauthenticated OpenCode request");
     if (request.body instanceof HttpBody.Uint8Array && request.body.text)
       this.bodies.push(request.body.text);
     if (url.pathname === "/api/agent" && this.config.hangAgent) return Effect.never;
+    if (hungCreation(this.config, request.method, url.pathname)) return Effect.never;
     if (url.pathname.endsWith("/command") && this.config.hangCommand) return Effect.never;
     if (url.pathname === "/api/session" && this.config.slowList && request.method === "GET")
       return Effect.sync(() => this.sessions(request, url)).pipe(Effect.delay("12 seconds"));

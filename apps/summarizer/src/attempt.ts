@@ -23,9 +23,18 @@ export interface TimedNote {
 
 export const formatNote = (note: Note): string => {
   const count = `(${note.number}/${note.maximum})`;
-  if (note.kind === "started") return `⏳ 요약 중 ${count}`;
-  if (note.kind === "failed") return `⚠️ 요약 실패 ${count}: ${note.reason}`;
-  return `⏸️ 요약 중단 ${count}: 재시도 횟수에 포함되지 않음`;
+  const labels = {
+    started: "⏳ 요약 중",
+    failed: "⚠️ 요약 실패",
+    interrupted: "⏸️ 요약 중단",
+  } as const;
+  const reason =
+    note.kind === "failed"
+      ? `: ${note.reason}`
+      : note.kind === "interrupted"
+        ? ": 재시도 횟수에 포함되지 않음"
+        : "";
+  return `${labels[note.kind]} ${count}${reason}`;
 };
 
 export const parseNote = (content: string): Note | undefined => {

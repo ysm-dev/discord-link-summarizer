@@ -31,12 +31,22 @@ it("splits without losing characters, preferring paragraphs, lines, then hard cu
   expect(splitSummary(fenced, 60)[0]).toBe("intro\n");
   expect(splitSummary("intro\nnot a fence ```\nlast line", 28)[0]).toBe("intro\nnot a fence ```\n");
   expect(splitSummary("head\n  ```ts\n" + "x".repeat(30) + "\n```\ntail", 36)[0]).toBe("head\n");
+  expect(splitSummary("head\n~~~ts\n" + "x".repeat(50) + "\n~~~\ntail", 35)[0]).toBe("head\n");
+  expect(splitSummary("head\n~ts\n" + "x".repeat(50) + "\nend", 18)[0]).toBe("head\n~ts\n");
+  expect(splitSummary("```\na\n```   \n" + "b".repeat(30), 17)[0]).toBe("```\na\n```   \n");
+  expect(splitSummary("head\n~~~\n```\n~~~oops\n" + "x".repeat(50) + "\n~~~\ntail", 30)[0]).toBe(
+    "head\n",
+  );
+  expect(splitSummary("head\n````lang\nabc\n```\n" + "x".repeat(50) + "\n````\ntail", 30)[0]).toBe(
+    "head\n",
+  );
   expect(splitSummary("head\n```ts\n" + "x".repeat(60) + "\n```\nend", 25)).toEqual([
     "head\n",
     "```ts\n" + "x".repeat(19),
     "x".repeat(25),
     "x".repeat(16) + "\n```\nend",
   ]);
+  expect(splitSummary("```\na\n```\n" + "b".repeat(20), 15)[0]).toBe("```\na\n```\n");
   const multilineFence = "head\n```ts\n" + "x".repeat(28) + "\n" + "y".repeat(28) + "\n```\nend";
   expect(splitSummary(multilineFence, 20)[2]?.length).toBe(20);
   expect(splitSummary("```\n" + "x".repeat(70) + "\n```", 40).join("")).toBe(

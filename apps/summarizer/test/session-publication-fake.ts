@@ -171,6 +171,7 @@ export const harness = (
     program.pipe(Effect.provide(layer));
   return {
     run,
+    http,
     requests,
     imports,
     privateServer,

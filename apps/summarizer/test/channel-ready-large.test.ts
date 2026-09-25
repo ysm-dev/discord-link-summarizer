@@ -1,8 +1,10 @@
 import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
-import { journalStatus, persistReady, readyManifest, verifyReady } from "../src/channel-record.ts";
+import { journalStatus, persistReady } from "../src/channel-record.ts";
+import { verifyReady } from "../src/ready.ts";
 import { journaledLink, now, open, prepare } from "./channel-record-fixture.ts";
 import { FakeDiscord } from "./discord-fake.ts";
+import { readyManifest } from "./ready-fixture.ts";
 
 const summaryParts = (fake: FakeDiscord, source: string) =>
   Array.from({ length: 100 }, (_, index) =>
