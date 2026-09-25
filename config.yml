@@ -18,3 +18,12 @@ channels:
   - id: "1476744853986476176"
     label: en_blog-org
     since: "2026-09-25T22:22:34+09:00"
+  - id: "1512011942095491132"
+    label: en_reddit-opencode
+    since: "2026-09-25T23:00:11+09:00"
+  - id: "1539538440130003035"
+    label: en_reddit-pi
+    since: "2026-09-25T23:00:11+09:00"
+  - id: "1547454315935834143"
+    label: en_reddit-deepseek
+    since: "2026-09-25T23:00:11+09:00"
