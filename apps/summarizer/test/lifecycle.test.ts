@@ -66,11 +66,20 @@ it("derives thread title and ownership/state", () => {
     "Hello ⚠️ world",
   );
   expect(threadTitle("⏳   hello https://site.test", "https://site.test")).toBe("hello");
-  expect(threadTitle("a".repeat(100) + " https://site.test", "https://site.test")).toBe(
-    "a".repeat(100),
+  expect(threadTitle("a".repeat(97) + " https://site.test", "https://site.test")).toBe(
+    "a".repeat(97),
   );
-  expect(threadTitle("a".repeat(101) + " https://site.test", "https://site.test")).toBe(
-    "a".repeat(99) + "…",
+  expect(threadTitle("a".repeat(98) + " https://site.test", "https://site.test")).toBe(
+    "a".repeat(96) + "…",
+  );
+  expect(threadTitle("👩‍💻".repeat(20) + " https://site.test", "https://site.test")).toBe(
+    "👩‍💻".repeat(19) + "…",
+  );
+  expect(threadTitle("e\u0301".repeat(49) + " https://site.test", "https://site.test")).toBe(
+    "e\u0301".repeat(48) + "…",
+  );
+  expect(threadTitle("a" + "\u0301".repeat(120) + " https://site.test", "https://site.test")).toBe(
+    "…",
   );
   expect(linkPostState(undefined, "bot")).toBe("pending");
   expect(linkPostState({ id: "1", owner_id: "other", name: "⏳ title" }, "bot")).toBe(
