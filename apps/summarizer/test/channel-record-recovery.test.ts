@@ -471,15 +471,16 @@ it.effect(
     }),
 );
 
-it.effect(
-  "settlement does not repeat in idle and unchanged recent checks do not rewrite state",
-  () =>
-    Effect.gen(function* () {
-      const { fake, api, journal } = yield* settledDone;
-      const baseline = fake.requests.length;
-      expect(yield* settleRecord(api, "20", journal)).toEqual(journal);
-      expect(yield* rewindRecent(api, "20", "bot", journal, since, horizon)).toEqual(journal);
-      expect(fake.requests.slice(baseline).some((r) => r.method === "PATCH")).toBe(false);
-      expect(yield* beginScan(api, "20", journal)).toEqual(journal);
-    }),
+it.effect("settlement and unchanged recent checks preserve the durable checkpoint", () =>
+  Effect.gen(function* () {
+    const { fake, api, journal } = yield* settledDone;
+    const checkpoint = journal.record.checkpoint;
+    expect(yield* settleRecord(api, "20", journal)).toEqual(journal);
+    expect(yield* rewindRecent(api, "20", "bot", journal, since, horizon)).toEqual(journal);
+    expect((yield* open(api)).journal?.record.checkpoint).toBe(checkpoint);
+    expect(
+      fake.messages.get(journal.parent)?.filter((m) => m.content === "DLS1 checkpoint {}"),
+    ).toHaveLength(1);
+    expect(yield* beginScan(api, "20", journal)).toEqual(journal);
+  }),
 );

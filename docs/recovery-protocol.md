@@ -42,6 +42,8 @@ A Channel Record preserves:
 - the effective Since last applied;
 - a settled history floor, separate from a discovery cursor;
 - a bounded scan epoch's upper message ID and next `before` cursor;
+- an optional recent-rescan `before` cursor, frozen lower-bound Snowflake and
+  effective Since, plus the oldest deleted-thread reset candidate seen so far;
 - whether the epoch is being discovered or worked.
 
 Message IDs are compared as integers. The settled floor is exclusive. The
@@ -76,6 +78,22 @@ Since backfills. Journal a reset before rewinding and restarting discovery;
 retain and deduplicate existing unresolved IDs. Moving Since forward may exclude
 new Pending work, but must not discard already-started In-progress work.
 Changing the Horizon must not jump an existing settled floor.
+Recent rescans snapshot the newest message and persist their cursor and any
+reset candidate after each complete page or when their share of the half-Run
+time slice is spent. A completed single-page rescan needs no marker write. An
+interrupted rescan resumes from that cursor in the next Run; a Since
+change restarts it with a fresh boundary. It completes before applying a floor
+rewind using the frozen boundary, then clears its cursor. Already-journaled work may run during a partial
+recent rescan only after historical discovery and archived adoption complete;
+an incomplete initial-history scan still blocks all newer Attempts. At Attempt
+admission the current Since excludes an unstarted Pending post (even if already
+journaled), while a freshly verified bot-owned In-progress thread, including a
+READY thread, remains eligible before Since.
+When an eligible journaled READY source's whole Summary Thread was deleted,
+clear its old manifest to Pending before claiming a replacement thread. Dry-run
+also reads archived and active bot-owned In-progress threads outside its normal
+history bound; if its deadline interrupts that enumeration, it labels the
+reported counts partial.
 
 Journal references address archived Summary Threads directly by source message
 ID. Recovery also enumerates active and public archived bot-owned In-progress

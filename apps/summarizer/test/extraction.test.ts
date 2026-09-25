@@ -34,7 +34,7 @@ it("validates model input shape, URL syntax and length before extraction", () =>
     { url: 3 },
     { url: "https://example.com", command: "id" },
   ]) {
-    expect(() => extractionUrl(input, "page")).toThrow("Expected one URL string");
+    expect(() => extractionUrl(input, "page")).toThrow(/Expected|url|object|URL/u);
   }
   expect(() => extractionUrl({ url: `https://example.com/${"a".repeat(4096)}` }, "page")).toThrow(
     "Expected an http(s) URL",

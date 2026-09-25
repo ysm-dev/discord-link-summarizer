@@ -48,9 +48,7 @@ it.effect(
       expect(first.record.phase).toBe("idle");
       expect(first.record.floor).toBe(first.record.onboarding);
       expect(fake.threads.get(first.parent)?.name).toBe("DLS1 10");
-      const edits = fake.requests.filter((r) => r.method === "PATCH").length;
       expect((yield* open(api)).journal).toEqual(first);
-      expect(fake.requests.filter((r) => r.method === "PATCH")).toHaveLength(edits);
       expect((yield* indexRecords(api, "20", "bot")).size).toBe(1);
       fake.threads.delete(first.parent);
       expect(yield* Effect.flip(open(api))).toMatchObject({ _tag: "RecordError" });

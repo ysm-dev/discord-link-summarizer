@@ -114,19 +114,12 @@ it.effect("does not claim an already-created onboarding thread a second time", (
   }),
 );
 
-it.effect("a confirmed journal page write needs no second readback", () =>
+it.effect("a confirmed journal page survives a record reload", () =>
   Effect.gen(function* () {
-    const { fake, api } = yield* prepare;
+    const { api } = yield* prepare;
     const journal = (yield* open(api)).journal!;
-    const before = fake.requests.filter((request) =>
-      request.path.startsWith(`/channels/${journal.parent}/messages?`),
-    ).length;
     yield* journalPage(api, "bot", journal, "once", ["1"]);
-    expect(
-      fake.requests.filter((request) =>
-        request.path.startsWith(`/channels/${journal.parent}/messages?`),
-      ),
-    ).toHaveLength(before + 1);
+    expect((yield* open(api)).journal?.entries.has("1")).toBe(true);
   }),
 );
 

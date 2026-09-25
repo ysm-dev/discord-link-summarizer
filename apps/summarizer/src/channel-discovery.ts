@@ -1,5 +1,6 @@
 import { Clock, DateTime, Duration, Effect } from "effect";
 import type { DiscordApi } from "./discord-client.ts";
+import type { DiscordMessage } from "./discord-schema.ts";
 import { linkFromPost } from "./link-post.ts";
 import { normalLowerBound } from "./window.ts";
 import {
@@ -8,36 +9,10 @@ import {
   journalStatus,
   snowflakeAt,
   updateRecord,
+  type ChannelRecord,
   type Journal,
 } from "./channel-record.ts";
 
-const recentReset = (api: DiscordApi, botId: string, journal: Journal, newFloor: string) =>
-  Effect.gen(function* () {
-    let before: string | undefined;
-    let reset: string | undefined;
-    for (;;) {
-      const page = yield* api.listMessages(journal.record.channel, before);
-      for (const source of page) {
-        if (BigInt(source.id) < BigInt(newFloor)) return reset;
-        if (!linkFromPost(source, botId)) continue;
-        const thread = yield* api.getChannel(source.id).pipe(
-          Effect.catchIf(
-            (e) => e.kind === "not-found",
-            () => Effect.void,
-          ),
-        );
-        if (
-          !thread &&
-          (journal.entries.get(source.id)?.state === "terminal" ||
-            journal.entries.get(source.id)?.state === "ready" ||
-            BigInt(source.id) <= BigInt(journal.record.floor))
-        )
-          reset = source.id;
-      }
-      if (page.length < 100) return reset;
-      before = page[99]!.id;
-    }
-  });
 /** Snapshot an actual message ID; a channel's last_message_id may point at a deletion. */
 export const beginScan = (api: DiscordApi, stateId: string, journal: Journal) =>
   Effect.gen(function* () {
@@ -206,23 +181,87 @@ export const pruneJournal = (api: DiscordApi, botId: string, journal: Journal) =
       yield* api.deleteMessage(journal.parent, message.id);
   });
 
-/** Rescan recent history for deleted bot-owned threads, preserving unresolved journal entries. */
-export const rewindRecent = (
+const deletedThread = (api: DiscordApi, botId: string, journal: Journal, source: DiscordMessage) =>
+  Effect.gen(function* () {
+    if (!linkFromPost(source, botId)) return false;
+    const thread = yield* api.getChannel(source.id).pipe(
+      Effect.catchIf(
+        (error) => error.kind === "not-found",
+        () => Effect.succeed(undefined),
+      ),
+    );
+    const state = journal.entries.get(source.id)?.state;
+    return !thread && (state === "terminal" || BigInt(source.id) <= BigInt(journal.record.floor));
+  });
+
+const clearRecent = (record: ChannelRecord): ChannelRecord => {
+  const next = { ...record };
+  delete next.recentBefore;
+  delete next.recentFloor;
+  delete next.recentSince;
+  delete next.recentReset;
+  return next;
+};
+
+const checkpointRecent = (
+  api: DiscordApi,
+  stateId: string,
+  journal: Journal,
+  before: string,
+  reset?: string,
+) =>
+  updateRecord(api, stateId, journal, {
+    ...clearRecent(journal.record),
+    recentBefore: before,
+    recentFloor: journal.record.recentFloor!,
+    recentSince: journal.record.recentSince!,
+    ...(reset === undefined ? {} : { recentReset: reset }),
+  });
+
+const scanRecent = (
+  api: DiscordApi,
+  stateId: string,
+  botId: string,
+  initial: Journal,
+  budget: number,
+) =>
+  Effect.gen(function* () {
+    let journal = initial;
+    let reset = journal.record.recentReset;
+    for (;;) {
+      if ((yield* Clock.currentTimeMillis) >= budget) return { journal, complete: false };
+      const page = yield* api.listMessages(journal.record.channel, journal.record.recentBefore);
+      let before = journal.record.recentBefore!;
+      let finished = page.length < 100;
+      for (const source of page) {
+        if (BigInt(source.id) < BigInt(journal.record.recentFloor!)) {
+          finished = true;
+          break;
+        }
+        if (yield* deletedThread(api, botId, journal, source)) reset = source.id;
+        before = source.id;
+        if (budget <= (yield* Clock.currentTimeMillis)) {
+          journal = yield* checkpointRecent(api, stateId, journal, before, reset);
+          return { journal, complete: false };
+        }
+      }
+      if (finished) return { journal, reset, complete: true };
+      journal = yield* checkpointRecent(api, stateId, journal, before, reset);
+    }
+  });
+
+const completeRecent = (
   api: DiscordApi,
   stateId: string,
   botId: string,
   journal: Journal,
   since: DateTime.Utc,
-  horizon: Duration.Duration,
+  newFloor: string,
+  reset?: string,
 ) =>
   Effect.gen(function* () {
-    const now = yield* Clock.currentTimeMillis;
-    const boundary = normalLowerBound(since, DateTime.makeUnsafe(now), horizon);
-    const newFloor = (BigInt(snowflakeAt(boundary)) - 1n).toString();
-    const reset = yield* recentReset(api, botId, journal, newFloor);
-    const changedSince = DateTime.formatIso(since) !== journal.record.since;
+    const sinceText = DateTime.formatIso(since);
     const backfill = Date.parse(journal.record.since) > DateTime.toEpochMillis(since);
-    if (!reset && !changedSince) return journal;
     const floor = reset
       ? (BigInt(reset) - 1n).toString()
       : backfill
@@ -232,18 +271,65 @@ export const rewindRecent = (
       journal = yield* journalPage(api, botId, journal, `reset/${reset}`, [reset]);
       journal = yield* journalStatus(api, stateId, botId, journal, { id: reset, state: "pending" });
     }
-    if (BigInt(floor) >= BigInt(journal.record.floor))
+    if (BigInt(floor) >= BigInt(journal.record.floor)) {
+      if (sinceText === journal.record.since && journal.record.recentBefore === undefined)
+        return journal;
       return yield* updateRecord(api, stateId, journal, {
-        ...journal.record,
-        since: DateTime.formatIso(since),
+        ...clearRecent(journal.record),
+        since: sinceText,
       });
+    }
     const next = {
-      ...journal.record,
-      since: DateTime.formatIso(since),
+      ...clearRecent(journal.record),
+      since: sinceText,
       floor,
       phase: "idle" as const,
       high: null,
       before: null,
     };
     return yield* updateRecord(api, stateId, journal, next);
+  });
+
+/** Rescan recent history with a durable cursor and a bounded time slice. */
+export const rewindRecent = (
+  api: DiscordApi,
+  stateId: string,
+  botId: string,
+  initial: Journal,
+  since: DateTime.Utc,
+  horizon: Duration.Duration,
+  budget = Infinity,
+) =>
+  Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    const boundary = normalLowerBound(since, DateTime.makeUnsafe(now), horizon);
+    const newFloor = (BigInt(snowflakeAt(boundary)) - 1n).toString();
+    const sinceText = DateTime.formatIso(since);
+    let journal = initial;
+    if (journal.record.recentSince !== sinceText) {
+      const first = (yield* api.listMessages(journal.record.channel))[0]?.id;
+      if (!first) return yield* completeRecent(api, stateId, botId, initial, since, newFloor);
+      journal = {
+        ...journal,
+        record: {
+          ...clearRecent(journal.record),
+          recentBefore: (BigInt(first) + 1n).toString(),
+          recentFloor: newFloor,
+          recentSince: sinceText,
+        },
+      };
+    }
+    const scanned = yield* scanRecent(api, stateId, botId, journal, budget);
+    const confirmed = scanned.journal === journal ? initial : scanned.journal;
+    return scanned.complete
+      ? yield* completeRecent(
+          api,
+          stateId,
+          botId,
+          confirmed,
+          since,
+          journal.record.recentFloor!,
+          scanned.reset,
+        )
+      : confirmed;
   });

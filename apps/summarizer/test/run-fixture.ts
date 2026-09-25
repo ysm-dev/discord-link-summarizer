@@ -24,6 +24,8 @@ channels:
     label: News
 `;
 export const at = Date.parse("2026-09-25T12:00:00Z");
+export const sinceDaysAgo = (days: number) =>
+  config.replace("2026-09-01T00:00:00Z", new Date(at - days * 86_400_000).toISOString());
 
 export const setup = (
   options: Parameters<typeof fakeOpenCode>[0] = {},
@@ -75,10 +77,18 @@ export const setup = (
       run(settings, dryRun, Redacted.make("secret"), "/db", {}, discoverService).pipe(
         Effect.provide(services),
       );
+    const invokeWith = (text: string, dryRun = false) =>
+      decodeConfig(text, "/home/test").pipe(
+        Effect.flatMap((changed) =>
+          run(changed, dryRun, Redacted.make("secret"), "/db", {}, discoverService),
+        ),
+        Effect.provide(services),
+      );
     return {
       discord,
       openCode,
       invoke,
+      invokeWith,
       services,
       getStarted: () => started,
       getEnvironment: () => serverEnvironment,
@@ -91,7 +101,7 @@ export const failureSetup = (errorType: string, yaml = config) =>
 export const rejectRename = (discord: FakeDiscord, id: string) =>
   discord.faults.push({ method: "PATCH", path: `/channels/${id}`, status: 400, code: 200000 });
 
-export const seedJournal = (discord: FakeDiscord, post: { id: string }) =>
+export const openRecord = (discord: FakeDiscord) =>
   Effect.gen(function* () {
     const api = yield* fakeApi(discord);
     const settings = yield* decodeConfig(config, "/home/test");
@@ -104,7 +114,21 @@ export const seedJournal = (discord: FakeDiscord, post: { id: string }) =>
       "bot",
       false,
     )).journal!;
+    return { api, journal };
+  });
+
+export const seedJournal = (discord: FakeDiscord, post: { id: string }) =>
+  Effect.gen(function* () {
+    const { api, journal } = yield* openRecord(discord);
     return yield* journalPage(api, "bot", journal, "fixture", [post.id]);
+  });
+
+export const waitForFault = (discord: FakeDiscord, remaining = 0) =>
+  Effect.gen(function* () {
+    for (let turn = 0; turn < 200 && discord.faults.length !== remaining; turn++)
+      yield* Effect.yieldNow;
+    if (discord.faults.length !== remaining) return yield* Effect.die("Discord fault not reached");
+    return void 0;
   });
 
 export const stalledWork = (api: DiscordApi, settings: Settings, journal: Journal, id: string) =>

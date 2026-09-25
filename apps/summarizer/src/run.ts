@@ -29,6 +29,7 @@ import {
   type Journal,
 } from "./channel-record.ts";
 import { Discord, DiscordLive, type DiscordApi } from "./discord-client.ts";
+import type { DiscordThread } from "./discord-schema.ts";
 import { linkFromPost, linkPostState } from "./link-post.ts";
 import { OpenCode } from "./opencode-client.ts";
 import { OpenCodeServer } from "./opencode-server.ts";
@@ -54,7 +55,8 @@ const dryJournalStates = (
   api: DiscordApi,
   bot: string,
   channel: string,
-  seen: ReadonlySet<string>,
+  since: number,
+  seen: Set<string>,
   deadline: number,
   journal?: Journal,
 ) =>
@@ -69,10 +71,65 @@ const dryJournalStates = (
           () => Effect.succeed(undefined),
         ),
       );
-      if (source && linkFromPost(source, bot))
-        counts = tally(counts, linkPostState(source.thread, bot));
+      if (source && linkFromPost(source, bot)) {
+        const state = linkPostState(source.thread, bot);
+        if (Date.parse(source.timestamp) >= since || state === "in-progress") {
+          seen.add(id);
+          counts = tally(counts, state);
+        }
+      }
     }
     return { counts, partial: false };
+  });
+
+const dryThreadStates = (
+  api: DiscordApi,
+  bot: string,
+  resolved: Resolved,
+  seen: Set<string>,
+  deadline: number,
+  journal?: Journal,
+) =>
+  Effect.gen(function* () {
+    let counts = emptyCounts();
+    const consider = (thread: DiscordThread) =>
+      Effect.gen(function* () {
+        if (
+          thread.parent_id !== resolved.channel.id ||
+          thread.owner_id !== bot ||
+          !thread.name.startsWith("⏳ ") ||
+          seen.has(thread.id) ||
+          journal?.entries.get(thread.id)?.state === "terminal"
+        )
+          return;
+        const source = yield* api.getMessage(resolved.channel.id, thread.id).pipe(
+          Effect.catchIf(
+            (error) => error.kind === "not-found",
+            () => Effect.succeed(undefined),
+          ),
+        );
+        if (source && linkFromPost(source, bot)) {
+          seen.add(thread.id);
+          counts = tally(counts, "in-progress");
+        }
+      });
+    for (const thread of yield* api.listActiveThreads(resolved.guild)) {
+      if ((yield* Clock.currentTimeMillis) >= deadline) return { counts, partial: true };
+      yield* consider(thread);
+    }
+    let before: string | undefined;
+    for (;;) {
+      if ((yield* Clock.currentTimeMillis) >= deadline) return { counts, partial: true };
+      const page = yield* api.listArchivedThreads(resolved.channel.id, before);
+      for (const thread of page.threads) {
+        if ((yield* Clock.currentTimeMillis) >= deadline) return { counts, partial: true };
+        yield* consider(thread);
+      }
+      if (!page.has_more) return { counts, partial: false };
+      before = page.threads.at(-1)?.thread_metadata.archive_timestamp;
+      if (!before)
+        return yield* new RunFailure({ message: "Archived thread pagination lacks a cursor" });
+    }
   });
 
 const preflight = (api: DiscordApi, config: Settings) =>
@@ -99,6 +156,7 @@ const dryCounts = (
   api: DiscordApi,
   bot: string,
   resolved: Resolved,
+  since: number,
   bound: number,
   deadline: number,
   journal?: Journal,
@@ -123,13 +181,28 @@ const dryCounts = (
         break;
       }
     }
+    if (partial) return { ...counts, partial };
     // An older started Link remains work even after Since or Horizon moves forward.
-    const extra = yield* dryJournalStates(api, bot, resolved.channel.id, seen, deadline, journal);
-    return {
+    const extra = yield* dryJournalStates(
+      api,
+      bot,
+      resolved.channel.id,
+      since,
+      seen,
+      deadline,
+      journal,
+    );
+    const combined = {
       pending: counts.pending + extra.counts.pending,
       inProgress: counts.inProgress + extra.counts.inProgress,
       givenUp: counts.givenUp + extra.counts.givenUp,
-      partial: partial || extra.partial,
+    };
+    if (extra.partial) return { ...combined, partial: true };
+    const threads = yield* dryThreadStates(api, bot, resolved, seen, deadline, journal);
+    return {
+      ...combined,
+      inProgress: combined.inProgress + threads.counts.inProgress,
+      partial: threads.partial,
     };
   });
 
@@ -148,16 +221,27 @@ const reportDry = (
       const journal = found
         ? yield* readJournal(api, settings.stateChannelId, bot, found.parent, found.record)
         : undefined;
-      const bound = journal
+      const since = DateTime.toEpochMillis(channel.since);
+      const normal = normalLowerBound(
+        channel.since,
+        DateTime.makeUnsafe(yield* Clock.currentTimeMillis),
+        settings.horizon,
+      );
+      const floor = journal
         ? Number((BigInt(journal.record.floor) + 1n) >> 22n) + 1420070400000
-        : normalLowerBound(
-            channel.since,
-            DateTime.makeUnsafe(yield* Clock.currentTimeMillis),
-            settings.horizon,
-          );
-      const counts = yield* dryCounts(api, bot, resolved, bound, deadline, journal);
+        : normal;
+      const bound = Math.max(since, Math.min(floor, normal));
+      const catchUp = Boolean(
+        journal &&
+        ((floor < normal && floor >= since) ||
+          [...journal.entries].some(
+            ([id, status]) =>
+              status?.state !== "terminal" && Number(BigInt(id) >> 22n) + 1420070400000 >= since,
+          )),
+      );
+      const counts = yield* dryCounts(api, bot, resolved, since, bound, deadline, journal);
       yield* Effect.logInfo(
-        `${channel.label}: effective start ${new Date(bound).toISOString()} ${journal ? "catch-up" : "uninitialized"}; Pending ${counts.pending}, In progress ${counts.inProgress}, Given up ${counts.givenUp}${counts.partial ? " (partial)" : ""}`,
+        `${channel.label}: effective start ${new Date(bound).toISOString()} ${!journal ? "uninitialized" : catchUp ? "catch-up" : "current"}; Pending ${counts.pending}, In progress ${counts.inProgress}, Given up ${counts.givenUp}${counts.partial || Boolean(journal?.record.recentBefore) || journal?.record.phase === "scan" ? " (partial)" : ""}`,
       );
     }
   });
@@ -188,6 +272,11 @@ const discover = (
         journal,
         channel.since,
         settings.horizon,
+        Math.min(
+          budget - Duration.toMillis(settings.runBudget) / 2,
+          (yield* Clock.currentTimeMillis) +
+            Duration.toMillis(settings.runBudget) / (2 * valid.length),
+        ),
       );
       journal = yield* adoptInProgress(api, settings.stateChannelId, bot, journal, guild, budget);
       journal = yield* settleRecord(api, settings.stateChannelId, journal);
