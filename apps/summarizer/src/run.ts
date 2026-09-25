@@ -120,14 +120,16 @@ const dryJournalStates = (
       if (seen.has(id) || status?.state === "terminal") continue;
       if ((yield* Clock.currentTimeMillis) >= deadline) return { counts, partial: true };
       const source = yield* drySource(api, channel, id);
-      if (source && linkFromPost(source, bot)) {
-        const state = linkPostState(source.thread, bot);
-        if (Date.parse(source.timestamp) >= since || state === "in-progress") {
-          seen.add(id);
-          if (source.thread) counts = tally(counts, state);
-          else withoutThread.add(id);
-        }
-      }
+      if (!source || !linkFromPost(source, bot)) continue;
+      const sourceTime = Date.parse(source.timestamp);
+      const thread =
+        source.thread ??
+        (sourceTime < since ? yield* directDryThread(api, channel, id) : undefined);
+      const state = linkPostState(thread, bot);
+      if (sourceTime < since && state !== "in-progress") continue;
+      seen.add(id);
+      if (thread) counts = tally(counts, state);
+      else withoutThread.add(id);
     }
     return { counts, partial: false };
   });
