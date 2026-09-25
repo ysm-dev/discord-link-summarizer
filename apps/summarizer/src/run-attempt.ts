@@ -1,9 +1,16 @@
 import { Clock, Data, DateTime, Duration, Effect, Exit, Option, Schema } from "effect";
 import type { Settings } from "./config.ts";
-import { attemptStatus, formatNote, parseNote, summaryParts, type Note } from "./attempt.ts";
+import {
+  attemptStatus,
+  formatNote,
+  isBotOutput,
+  parseNote,
+  summaryParts,
+  type Note,
+} from "./attempt.ts";
 import { journalStatus, persistReady, type Journal } from "./channel-record.ts";
 import { verifyReady } from "./ready.ts";
-import type { DiscordApi } from "./discord-client.ts";
+import { allMessages, type DiscordApi } from "./discord-client.ts";
 import { DiscordThread, type DiscordMessage } from "./discord-schema.ts";
 import { linkFromPost, linkPostState, threadTitle } from "./link-post.ts";
 import type { OpenCodeAttempt, OpenCodeError, OpenCodeResult } from "./opencode-client.ts";
@@ -16,14 +23,9 @@ export interface Work {
 }
 
 const history = (api: DiscordApi, thread: string) =>
-  Effect.gen(function* () {
-    const messages: DiscordMessage[] = [];
-    for (;;) {
-      const page = yield* api.listThreadMessages(thread, messages.at(-1)?.id);
-      messages.push(...page);
-      if (page.length < 100) return messages.toReversed();
-    }
-  });
+  allMessages({ listMessages: api.listThreadMessages }, thread).pipe(
+    Effect.map((messages) => messages.toReversed()),
+  );
 
 const writeMessage = (api: DiscordApi, thread: string, content: string) =>
   Effect.gen(function* () {
@@ -103,7 +105,7 @@ const changedThread = (source: DiscordMessage, fresh: DiscordMessage["thread"], 
 
 const notesOf = (messages: readonly DiscordMessage[], bot: string) =>
   messages.flatMap((message) => {
-    const note = message.author.id === bot ? parseNote(message.content) : undefined;
+    const note = isBotOutput(message, bot) ? parseNote(message.content) : undefined;
     return note
       ? [
           {
@@ -180,7 +182,7 @@ const verifyCommitted = (
       thread.name.startsWith("⏳ ") ||
       thread.name.startsWith("⚠️ ") ||
       (ready?.state === "ready" && !verifyReady(ready, messages, bot)) ||
-      !messages.some((message) => message.author.id === bot)
+      !messages.some((message) => isBotOutput(message, bot))
     )
       return yield* new AttemptFailure({ message: `Unverified terminal Summary Thread ${id}` });
     return void 0;
@@ -215,7 +217,7 @@ const settleReady = (
     if (!verifyReady(ready, messages, bot))
       return yield* new AttemptFailure({ message: "READY parts mismatch" });
     for (const message of messages.filter(
-      (m) => m.author.id === bot && !ready.parts!.includes(m.id),
+      (m) => isBotOutput(m, bot) && !ready.parts!.includes(m.id),
     ))
       yield* api.deleteMessage(thread, message.id);
     yield* rename(api, thread, name);

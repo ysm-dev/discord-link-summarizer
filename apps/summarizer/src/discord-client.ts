@@ -96,7 +96,7 @@ export interface DiscordApi {
 }
 
 /** Read the complete Summary Thread for publication reconciliation. */
-export const allMessages = (client: DiscordApi, channel: string) =>
+export const allMessages = (client: Pick<DiscordApi, "listMessages">, channel: string) =>
   Effect.gen(function* () {
     const seen: DiscordMessage[] = [];
     for (;;) {

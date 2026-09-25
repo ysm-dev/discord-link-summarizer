@@ -19,6 +19,7 @@ const interrupted: Note = { kind: "interrupted", number: 1, maximum: 3 };
 const note = (value: Note, minute: number): TimedNote => ({ note: value, at: at(minute) });
 const message = (id: string, content: string, author: string) => ({
   id,
+  type: 0,
   content,
   author: { id: author },
 });
