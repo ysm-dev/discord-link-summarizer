@@ -67,21 +67,28 @@ it.effect("dry-run fails closed when archived pagination loses its cursor", () =
   }),
 );
 
-for (const listing of ["active", "archived", "empty"] as const)
-  it.effect(`dry-run labels a deadline spent listing ${listing} threads`, () =>
+for (const listing of ["active", "archived", "empty", "direct"] as const)
+  it.effect(`dry-run labels a deadline spent checking ${listing} threads`, () =>
     Effect.gen(function* () {
       const { discord, invoke } = yield* setup();
       const source =
-        listing === "empty"
+        listing === "empty" || listing === "direct"
           ? undefined
           : discord.addMessage("10", "https://example.test/old", at - 9 * day);
       if (source) discord.addThread("10", source.id, "⏳ Old", "bot", listing === "archived");
+      let delayed: string | undefined;
+      if (listing === "direct") {
+        discord.addMessage("10", "https://example.test/first", at - 200);
+        const newest = discord.addMessage("10", "https://example.test/second", at - 100);
+        delayed = `/channels/10/messages/${newest.id}`;
+      }
       discord.faults.push({
         method: "GET",
         path:
-          listing === "archived"
+          delayed ??
+          (listing === "archived"
             ? "/channels/10/threads/archived/public"
-            : "/guilds/guild/threads/active",
+            : "/guilds/guild/threads/active"),
         pause: 30 * 60_000,
       });
       const { logs, layer } = captureLogs();
@@ -89,7 +96,9 @@ for (const listing of ["active", "archived", "empty"] as const)
       yield* waitForFault(discord);
       yield* TestClock.adjust("30 minutes");
       expect(yield* Fiber.join(fiber)).toBe(0);
-      expect(logs.join(" ")).toContain("In progress 0, Given up 0 (partial)");
+      expect(logs.join(" ")).toContain(
+        `Pending ${listing === "direct" ? 2 : 0}, In progress 0, Given up 0 (partial)`,
+      );
       if (source) expect(discord.threads.get(source.id)?.name).toBe("⏳ Old");
     }),
   );
@@ -236,15 +245,17 @@ it.effect(
 
 it.effect("dry-run reports an uninitialized channel without looking up phantom journal IDs", () =>
   Effect.gen(function* () {
-    const { discord, invoke } = yield* setup();
+    const { discord, invoke, getStarted } = yield* setup();
     discord.addMessage("10", "https://example.test/a", at - 1000);
+    const messages = structuredClone(discord.messages);
     const { logs, layer } = captureLogs();
     expect(yield* invoke(true).pipe(Effect.provide(layer))).toBe(0);
     expect(logs.join(" ")).toContain(
       `News: effective start ${new Date(at - 7 * 86_400_000).toISOString()} uninitialized; Pending 1, In progress 0, Given up 0`,
     );
     expect(logs.join(" ")).not.toContain("(partial)");
-    expect(discord.requests.filter((r) => r.path.startsWith("/channels/10/messages/"))).toEqual([]);
+    expect(discord.messages).toEqual(messages);
+    expect(getStarted()).toBe(0);
     discord.messages.set("10", []);
     logs.length = 0;
     expect(yield* invoke(true).pipe(Effect.provide(layer))).toBe(0);
