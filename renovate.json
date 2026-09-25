@@ -6,6 +6,11 @@
   "schedule": ["before 6am on monday"],
   "packageRules": [
     {
+      "description": "Effect v4 release candidates must move together; unstable import paths can change between releases.",
+      "matchPackageNames": ["effect", "@effect/platform-bun", "@effect/vitest"],
+      "groupName": "effect"
+    },
+    {
       "description": "oxlint-tsgolint is hard-pinned to a TypeScript patch release (7.0.2002 means 'tsgolint patch 2 for TypeScript 7.0.2'). Bumping one without the other breaks type-aware linting.",
       "matchPackageNames": ["typescript", "oxlint-tsgolint"],
       "groupName": "typescript and tsgolint"
@@ -17,7 +22,7 @@
       "automerge": false
     },
     {
-      "description": "Eight quality gates are what make unattended merges safe.",
+      "description": "Quality gates are what make unattended merges safe.",
       "matchUpdateTypes": ["patch", "minor"],
       "automerge": true
     },

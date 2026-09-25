@@ -1,0 +1,28 @@
+{
+  "name": "@discord-link-summarizer/summarizer",
+  "version": "0.0.0",
+  "private": true,
+  "bin": {
+    "discord-link-summarizer": "./src/index.ts"
+  },
+  "type": "module",
+  "exports": {
+    "./extraction-plugin": "./src/extraction-plugin.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@effect/platform-bun": "4.0.0-rc.117",
+    "@opencode/client": "2.0.15",
+    "@opencode/plugin": "2.0.15",
+    "effect": "4.0.0-rc.117"
+  },
+  "devDependencies": {
+    "@effect/vitest": "4.0.0-rc.117",
+    "@total-typescript/shoehorn": "0.1.2",
+    "@types/node": "26.6.2",
+    "typescript": "7.0.2",
+    "vitest": "5.0.1"
+  }
+}

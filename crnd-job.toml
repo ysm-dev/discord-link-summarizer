@@ -1,0 +1,19 @@
+# crnd v0.2.5 job fragment. Never import this file alone: import replaces ALL jobs.
+# Merge into a private full export first; see README.md. Keep paused until rollout checks pass.
+[jobs.discord-link-summarizer]
+command = [
+  "/Users/chris/.bun/bin/bun",
+  "/absolute/checkout/apps/summarizer/src/index.ts",
+  "--config",
+  "/absolute/checkout/config.yml",
+]
+cwd = "/absolute/checkout"
+schedule = "* * * * *"
+timezone = "Asia/Seoul"
+overlap_policy = "skip"
+timeout_ms = 2100000
+paused = true
+
+[jobs.discord-link-summarizer.env]
+DISCORD_BOT_TOKEN = "SET_ON_MACHINE"
+OPENCODE_DB = "/absolute/path/to/opencode.db"

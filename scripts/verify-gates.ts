@@ -76,9 +76,19 @@ const CHECKS: readonly Check[] = [
     checkInverse: true,
   },
   {
+    gate: "Effect diagnostics",
+    files: {
+      "apps/summarizer/src/gate-check.ts":
+        'import { Effect } from "effect";\nEffect.log("never run");\n',
+    },
+    command: ["bun", "run", "effect:check"],
+    expect: "effect(floatingEffect)",
+    checkInverse: true,
+  },
+  {
     gate: "100% coverage",
     files: {
-      "packages/duration/src/gate-check.ts":
+      "apps/summarizer/src/gate-check.ts":
         "export const untested = (n: number): number => (n > 0 ? n : 0);\n",
     },
     command: ["vitest", "run", "--coverage", "--silent"],
@@ -88,7 +98,7 @@ const CHECKS: readonly Check[] = [
   {
     gate: "dead code",
     files: {
-      "packages/duration/src/gate-check.ts": "export const orphan = 1;\n",
+      "apps/summarizer/src/gate-check.ts": "export const orphan = 1;\n",
     },
     command: ["knip"],
     expect: "Unused files",
@@ -97,8 +107,8 @@ const CHECKS: readonly Check[] = [
   {
     gate: "duplicated code",
     files: {
-      "packages/duration/src/gate-check-a.ts": duplicatedModule("a"),
-      "packages/duration/src/gate-check-b.ts": duplicatedModule("b"),
+      "apps/summarizer/src/gate-check-a.ts": duplicatedModule("a"),
+      "apps/summarizer/src/gate-check-b.ts": duplicatedModule("b"),
     },
     command: ["jscpd"],
     expect: "Clone found",

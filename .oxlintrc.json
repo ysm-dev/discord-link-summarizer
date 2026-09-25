@@ -13,6 +13,10 @@
   "jsPlugins": ["oxlint-plugin-complexity"],
   "categories": { "correctness": "error", "suspicious": "error" },
   "rules": {
+    "vitest/no-standalone-expect": [
+      "error",
+      { "additionalTestBlockFunctions": ["it.effect", "it.live"] }
+    ],
     "complexity/complexity": ["error", { "cyclomatic": 21, "cognitive": 21 }],
     "eslint/max-lines": ["error", { "max": 499, "skipBlankLines": false, "skipComments": false }],
     "typescript/no-explicit-any": "error",

@@ -1,5 +1,8 @@
 # Summaries run on a private OpenCode server driven over HTTP
 
+The shared-database detail below is superseded by ADR-0008. The private HTTP
+server remains the execution boundary.
+
 Each Run starts its own `opencode serve --stdio` in the `translate` workspace. It drives that server through OpenCode's HTTP API: create a session, run the channel's command on the Link, wait for it to finish, and read the final assistant text as the Summary.
 
 ## Considered Options

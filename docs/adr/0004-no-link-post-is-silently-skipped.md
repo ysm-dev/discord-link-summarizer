@@ -1,5 +1,8 @@
 # No Link Post is silently skipped
 
+The recent-thread catch-up heuristic below is superseded by ADR-0007. It can
+miss older Pending gaps after a partially successful Run.
+
 Every Link Post after its channel's Since must end Done or Given up, however long the Summarizer was down. A Run normally re-checks only the Horizon. When a channel shows none of the Summarizer's threads within the Horizon, the Run checks that channel's archived threads to tell two cases apart:
 
 - **The Summarizer has worked in the channel before.** The outage was longer than the Horizon, so the Run reads further back until it reaches the Summarizer's newest Summary Thread. It never reads past Since.
