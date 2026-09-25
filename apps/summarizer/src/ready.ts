@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Status } from "./channel-record.ts";
 import type { DiscordMessage } from "./discord-schema.ts";
+import { isBotOutput } from "./attempt.ts";
 
 const readyDigest = (parts: readonly string[]) => {
   const hash = createHash("sha256");
@@ -22,7 +23,7 @@ export const readyManifest = (source: string, parts: readonly DiscordMessage[]) 
 /** Match explicit message identities, not note-shaped model text. */
 export const verifyReady = (status: Status, messages: readonly DiscordMessage[], botId: string) => {
   const parts = status.parts?.map((partId) =>
-    messages.find((message) => message.id === partId && message.author.id === botId),
+    messages.find((message) => message.id === partId && isBotOutput(message, botId)),
   );
   return (
     status.state === "ready" &&

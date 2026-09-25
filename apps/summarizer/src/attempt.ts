@@ -12,6 +12,7 @@ export type Note =
 
 export interface ThreadMessage {
   readonly id: string;
+  readonly type: number;
   readonly content: string;
   readonly author: { readonly id: string };
 }
@@ -62,12 +63,16 @@ export const parseNote = (content: string): Note | undefined => {
   return undefined;
 };
 
-/** Only bot messages outside all note formats are Summary parts. */
+/** Discord attributes system thread starters to the bot, but they are not editable output. */
+export const isBotOutput = (message: ThreadMessage, botId: string) =>
+  message.type === 0 && message.author.id === botId;
+
+/** Only ordinary bot messages outside all note formats are Summary parts. */
 export const summaryParts = (
   messages: readonly ThreadMessage[],
   botId: string,
 ): readonly ThreadMessage[] =>
-  messages.filter((message) => message.author.id === botId && !parseNote(message.content));
+  messages.filter((message) => isBotOutput(message, botId) && !parseNote(message.content));
 
 export type AttemptStatus = {
   readonly counted: number;
