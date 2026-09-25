@@ -46,16 +46,23 @@ Keep IDs quoted, replace the example ID/time with the real channel and activatio
 
 ### Run and schedule (human, after setup is verified)
 
-`DISCORD_BOT_TOKEN` and `OPENCODE_DB` must be set in the Run environment; never put the token in `config.yml` or this repo. From the installed checkout, after securely loading those environment values:
+`DISCORD_BOT_TOKEN` and `OPENCODE_DB` must be set in the Run environment; never put the token in `config.yml` or this repo. Keep them in a private environment file such as `~/.config/discord-link-summarizer/.env` (directory mode `0700`, file mode `0600`):
+
+```dotenv
+DISCORD_BOT_TOKEN=your-dedicated-bot-token
+OPENCODE_DB=/absolute/private/summarizer-opencode.sqlite
+```
+
+From the installed checkout, load that file with Bun. Clear inherited values first because Bun's env-file does not override process environment; this prevents an interactive `OPENCODE_DB` from leaking into the Run:
 
 ```sh
-bun apps/summarizer/src/index.ts --config ./config.yml --dry-run
-bun apps/summarizer/src/index.ts --config ./config.yml
+env -u DISCORD_BOT_TOKEN -u OPENCODE_DB bun --env-file="$HOME/.config/discord-link-summarizer/.env" apps/summarizer/src/index.ts --config ./config.yml --dry-run
+env -u DISCORD_BOT_TOKEN -u OPENCODE_DB bun --env-file="$HOME/.config/discord-link-summarizer/.env" apps/summarizer/src/index.ts --config ./config.yml
 ```
 
 The default config path without `--config` is `~/.config/discord-link-summarizer/config.yml`. Dry run reads local Channel Records and reports each channel's effective start, partial discovery, and Pending/In-progress/Given-up counts without progress/Discord writes or OpenCode startup. If the progress database is absent, dry-run leaves it absent. Inspect results for one test channel before adding more. The second command performs a real Run and creates the private database automatically. Run manual and scheduled invocations as the same Unix user so they share progress and the lock. The approved single-machine lock uses Bun's retained descriptor with macOS `lockf -t 0 3` on one stable private lock file, including manual and dry Runs; `overlap_policy = "skip"` protects only ticks of the **same local crnd job**. Do not replace/unlink the lock file or run a second machine; see the recovery protocol.
 
-The checked-in `crnd-job.toml` is a **paused fragment**, not a complete export. crnd **v0.2.5** `import -f` synchronizes the _entire_ job set and deletes every absent job, including `wachi-check`. To preserve wachi and all other jobs:
+The checked-in `crnd-job.toml` is a **paused fragment**, not a complete export. It uses Bun's `--env-file`; crnd **v0.2.5** rejects TOML `env` tables because its parser attaches symbol metadata that its environment validator rejects. If existing exported jobs contain such tables, resolve that crnd incompatibility before importing; preserve their settings. `import -f` synchronizes the _entire_ job set and deletes every absent job, including `wachi-check`. To preserve wachi and all other jobs:
 
 1. On the target machine, create a private directory (`umask 077`) outside the repo. Run `crnd export -o /private/path/jobs.toml` and keep an untouched, private copy of that full export as a rollback snapshot; exports can contain existing job secrets. Record `crnd list` and check wachi's `crnd show -n wachi-check` before changes. Never commit or print the export.
 2. In a **working copy of the full export**, append the fragment after a blank line:
@@ -66,7 +73,7 @@ The checked-in `crnd-job.toml` is a **paused fragment**, not a complete export. 
    cat crnd-job.toml >> /private/path/merged-jobs.toml
    ```
 
-   Ensure the result still contains **every** exported `[jobs.<name>]` and its nested env/settings; do not replace, redact or re-create wachi's job. Edit only the new job's absolute Bun/checkout paths, `cwd`, isolated `OPENCODE_DB` path and `DISCORD_BOT_TOKEN` placeholder. Supply the real token privately in this copy. Keep `paused = true` and permissions restrictive; do not commit this merged file.
+   Ensure the result still contains **every** exported `[jobs.<name>]` and its nested env/settings; do not replace, redact or re-create wachi's job. Edit only the new job's absolute Bun/checkout paths, `cwd` and `--env-file` path. Put the dedicated token and isolated `OPENCODE_DB` path in that private environment file, not in the TOML. Keep `paused = true` and permissions restrictive; do not commit this merged file or the environment file.
 
 3. Validate the merged TOML and compare it to the snapshot: every original job and its settings must be preserved, plus exactly the new paused job. For example, Python 3.11+ can check this without contacting crnd:
 
