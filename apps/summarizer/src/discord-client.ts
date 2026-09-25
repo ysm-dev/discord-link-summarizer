@@ -19,9 +19,11 @@ const responseKind = (
   status: number,
   code: number | undefined,
   hasName: boolean,
+  invalidName: boolean,
 ): DiscordFailure["kind"] => {
   if (code === 160004) return "thread-exists";
-  if (code === 200000 || code === 200001) return hasName ? "name-rejected" : "invalid-response";
+  if (code === 200000 || code === 200001 || (status === 400 && code === 50035 && invalidName))
+    return hasName ? "name-rejected" : "invalid-response";
   if (status === 401) return "unauthorized";
   if (status === 403) return "forbidden";
   if (status === 404) return "not-found";
@@ -199,6 +201,7 @@ const makeDiscord = (
               response.status,
               Option.getOrUndefined(details)?.code,
               body !== undefined && "name" in body,
+              Option.getOrUndefined(details)?.errors?.name !== undefined,
             ),
             response.status,
           ),

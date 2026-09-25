@@ -38,8 +38,15 @@ export const threadTitle = (content: string, link: string): string => {
     .trim()
     .replace(/^(?:⏳|⚠️)\s*/u, "");
   if (!title) return "요약";
-  const characters = Array.from(new Intl.Segmenter().segment(title), (segment) => segment.segment);
-  return characters.length > 100 ? characters.slice(0, 99).join("") + "…" : title;
+  // Reserve the longest lifecycle prefix. UTF-16 length is a conservative Discord character budget.
+  const limit = 100 - "⚠️ ".length;
+  if (title.length <= limit) return title;
+  let shortened = "";
+  for (const { segment } of new Intl.Segmenter().segment(title)) {
+    if (shortened.length + segment.length > limit - 1) break;
+    shortened += segment;
+  }
+  return shortened + "…";
 };
 
 export type LinkPostState = "someone-else" | "pending" | "in-progress" | "given-up" | "done";

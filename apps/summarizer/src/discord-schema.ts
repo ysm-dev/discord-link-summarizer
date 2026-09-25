@@ -39,7 +39,11 @@ export const ArchivedThreads = () =>
     threads: Schema.Array(DiscordThread()),
     has_more: Schema.Boolean,
   });
-export const DiscordErrorBody = () => Schema.Struct({ code: Schema.optional(Schema.Finite) });
+export const DiscordErrorBody = () =>
+  Schema.Struct({
+    code: Schema.optional(Schema.Finite),
+    errors: Schema.optional(Schema.Struct({ name: Schema.optional(Schema.JsonObject) })),
+  });
 export const DiscordRateLimitBody = () =>
   Schema.Struct({
     retry_after: Schema.Finite,
