@@ -24,11 +24,13 @@ permissions:
 jobs:
   gates:
     name: Quality gates
-    runs-on: ubuntu-latest
+    # Machine-lock tests exercise macOS /usr/bin/lockf in descriptor mode.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - run: /usr/bin/lockf -t 0 3 3>"$RUNNER_TEMP/lockf-smoke"
       - uses: oven-sh/setup-bun@v2.2.0
       # Vitest requires Node >= 22.12 and does not support the bun runtime with
       # the v8 coverage provider. bun installs and runs scripts; Node runs tests.
