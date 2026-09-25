@@ -1,4 +1,4 @@
-import { expect, it } from "@effect/vitest";
+import { expect, it } from "./progress-fixture.ts";
 import { Effect } from "effect";
 import { journalPage, journalStatus } from "../src/channel-record.ts";
 import type { FakeDiscord } from "./discord-fake.ts";
@@ -123,14 +123,9 @@ for (const mode of ["active", "archived", "direct"] as const)
           const foreign = discord.addMessage("10", "https://example.test/foreign", at - 83_000_000);
           discord.addMessage("10", "https://example.test/pending", at - 100);
           if (journaled) {
-            const { api, journal } = yield* openRecord(discord);
-            const marked = yield* journalPage(api, "bot", journal, "missing", [
-              started.id,
-              given.id,
-              done.id,
-              foreign.id,
-            ]);
-            yield* journalStatus(api, "20", "bot", marked, { id: done.id, state: "terminal" });
+            const { journal } = yield* openRecord(discord);
+            const marked = yield* journalPage(journal, [started.id, given.id, done.id, foreign.id]);
+            yield* journalStatus(marked, { id: done.id, state: "terminal" });
           }
           discord.addThread("10", started.id, "⏳ Started", "bot", mode === "archived");
           discord.addThread("10", given.id, "⚠️ Given", "bot", true);
@@ -161,7 +156,7 @@ for (const mode of ["active", "archived", "direct"] as const)
 it.effect("dry-run counts owned active and archived work, not unrelated or terminal threads", () =>
   Effect.gen(function* () {
     const { discord, invoke } = yield* setup();
-    const { api, journal } = yield* openRecord(discord);
+    const { journal } = yield* openRecord(discord);
     const active = discord.addMessage("10", "https://example.test/active", old);
     discord.addThread("10", active.id, "⏳ Active", "bot");
     const archived = discord.addMessage("10", "https://example.test/archived", old + 1);
@@ -179,8 +174,8 @@ it.effect("dry-run counts owned active and archived work, not unrelated or termi
     discord.addThread("10", oldDone.id, "Done", "bot", true);
     const recent = discord.addMessage("10", "https://example.test/recent", at - 100);
     discord.addThread("10", recent.id, "⏳ Recent", "bot", true);
-    const marked = yield* journalPage(api, "bot", journal, "terminal", [finished.id, recent.id]);
-    yield* journalStatus(api, "20", "bot", marked, { id: finished.id, state: "terminal" });
+    const marked = yield* journalPage(journal, [finished.id, recent.id]);
+    yield* journalStatus(marked, { id: finished.id, state: "terminal" });
     discord.faults.push({
       method: "GET",
       path: `/channels/10/messages/${foreign.id}`,
@@ -200,8 +195,8 @@ it.effect(
       const { discord, invoke } = yield* setup();
       const started = discord.addMessage("10", "https://example.test/started", old);
       const oldPending = discord.addMessage("10", "https://example.test/old-pending", old + 1);
-      const { api, journal } = yield* openRecord(discord);
-      yield* journalPage(api, "bot", journal, "old", [started.id, oldPending.id]);
+      const { journal } = yield* openRecord(discord);
+      yield* journalPage(journal, [started.id, oldPending.id]);
       discord.addThread("10", started.id, "⏳ Started", "bot", true);
       discord.addMessage("10", "https://example.test/recent", at - 100);
       discord.messages.set(
@@ -261,9 +256,9 @@ it.effect("dry-run counts pre-Since journaled In-progress work if archive listin
   Effect.gen(function* () {
     const { discord, invokeWith } = yield* setup();
     const source = discord.addMessage("10", "https://example.test/journaled", old);
-    const { api, journal } = yield* openRecord(discord);
+    const { journal } = yield* openRecord(discord);
     const excluded = discord.addMessage("10", "https://example.test/excluded", old + 1);
-    yield* journalPage(api, "bot", journal, "old", [source.id, excluded.id]);
+    yield* journalPage(journal, [source.id, excluded.id]);
     discord.addThread("10", source.id, "⏳ Journaled", "bot", true);
     discord.addThread("10", excluded.id, "⚠️ Given", "bot", true);
     omitArchivedThreads(discord);
@@ -277,8 +272,8 @@ it.effect("dry-run keeps after-Since journaled Given-up work when archive listin
   Effect.gen(function* () {
     const { discord, invoke } = yield* setup();
     const given = discord.addMessage("10", "https://example.test/given", old);
-    const { api, journal } = yield* openRecord(discord);
-    yield* journalPage(api, "bot", journal, "old", [given.id]);
+    const { journal } = yield* openRecord(discord);
+    yield* journalPage(journal, [given.id]);
     discord.addThread("10", given.id, "⚠️ Given", "bot", true);
     omitArchivedThreads(discord);
     discord.faults.push({ method: "GET", path: `/channels/${given.id}`, status: 404 });

@@ -1,5 +1,7 @@
 # One writer and durable Channel Records
 
+[ADR-0010](0010-local-sqlite-progress.md) replaces the Discord record storage below with local SQLite. The single-writer and durable discovery requirements remain.
+
 Discord cannot atomically claim an existing retry thread. The operator approved
 one supported machine with an OS-held lock covering manual and scheduled Runs,
 instead of adding a distributed coordinator. A Run must hold that lock through

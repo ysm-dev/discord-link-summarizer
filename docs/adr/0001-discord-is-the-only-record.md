@@ -1,5 +1,7 @@
 # Discord is the only record of progress
 
+Superseded by [ADR-0010](0010-local-sqlite-progress.md). The following records the original decision.
+
 The Summarizer keeps no local state. Every Run works out which Link Posts are done, in progress, or still pending from Discord alone, reading the messages within the Horizon, the threads started from them, and the Summarizer's own marks. We chose this over a local ledger such as wachi's SQLite outbox for three reasons. The result has to live in Discord anyway. A second record can drift from it when messages or threads are deleted. And the machine can be wiped, or be down for days, without losing anything.
 
 ## Consequences

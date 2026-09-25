@@ -1,8 +1,7 @@
-import { expect, it } from "@effect/vitest";
+import { expect, it } from "./progress-fixture.ts";
 import { Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
-import { journalStatus, type Status } from "../src/channel-record.ts";
-import { fakeApi } from "./discord-api-fixture.ts";
+import { journalStatus, readJournal, type Status } from "../src/channel-record.ts";
 import { readyManifest } from "./ready-fixture.ts";
 import { at, seedJournal, setup, sinceDaysAgo, waitForFault } from "./run-fixture.ts";
 
@@ -20,9 +19,8 @@ it.effect("a deleted recent READY thread is rebuilt before its next Attempt", ()
     const { discord, invoke } = yield* setup();
     const source = discord.addMessage("10", "https://example.test/ready", at - 100);
     const journal = yield* seedJournal(discord, source);
-    const api = yield* fakeApi(discord);
     discord.addThread("10", source.id, "⏳ Old", "bot", true);
-    yield* journalStatus(api, "20", "bot", journal, readyStatusFor(source.id));
+    yield* journalStatus(journal, readyStatusFor(source.id));
     discord.threads.delete(source.id);
     expect(yield* invoke()).toBe(0);
     expect(discord.threads.get(source.id)?.thread_metadata.archived).toBe(true);
@@ -45,7 +43,7 @@ it.effect("a deleted completion survives a time-sliced rescan and is rebuilt nex
     expect(yield* Fiber.join(fiber)).toBe(0);
     expect(discord.threads.get(done.id)).toBeUndefined();
     expect(discord.threads.get(older.id)?.thread_metadata.archived).toBe(true);
-    discord.faults.push({ method: "GET", path: "/channels/20/messages?", pause: 10 * 60_000 });
+    discord.faults.push({ method: "GET", path: "/channels/10", pause: 10 * 60_000 });
     discord.faults.push({ method: "GET", path: `/channels/${older.id}`, status: 403 });
     const messageState = structuredClone(discord.messages);
     const paused = yield* Effect.forkChild(invoke());
@@ -88,10 +86,10 @@ it.effect("an unchanged rescan does not repeat a completed Summary", () =>
     const { discord, invoke } = yield* setup();
     const source = discord.addMessage("10", "https://example.test/once", at - 100);
     expect(yield* invoke()).toBe(0);
-    const stateMessages = structuredClone(discord.messages.get("20"));
+    const stored = yield* readJournal("10");
     yield* TestClock.adjust("1 second");
     expect(yield* invoke()).toBe(0);
-    expect(discord.messages.get("20")).toEqual(stateMessages);
+    expect(yield* readJournal("10")).toEqual(stored);
     expect(discord.messages.get(source.id)?.filter((m) => m.content === "안녕하세요")).toHaveLength(
       1,
     );
@@ -128,7 +126,7 @@ it.effect("an exact rescan deadline defers the deleted thread check until the ne
     expect(yield* invoke()).toBe(0);
     discord.threads.delete(source.id);
     discord.messages.delete(source.id);
-    discord.faults.push({ method: "GET", path: "/channels/20/messages?", pause: 10 * 60_000 });
+    discord.faults.push({ method: "GET", path: "/channels/10", pause: 10 * 60_000 });
     discord.faults.push({ method: "GET", path: `/channels/${source.id}`, status: 403 });
     const fiber = yield* Effect.forkChild(invoke());
     yield* waitForFault(discord, 1);
@@ -146,14 +144,13 @@ it.effect("Pending can become READY without discarding its verified parts", () =
     const { discord, invoke } = yield* setup();
     const source = discord.addMessage("10", "https://example.test/pending", at);
     const journal = yield* seedJournal(discord, source);
-    const api = yield* fakeApi(discord);
-    const pending = yield* journalStatus(api, "20", "bot", journal, {
+    const pending = yield* journalStatus(journal, {
       id: source.id,
       state: "pending",
     });
     discord.addThread("10", source.id, "⏳ Draft", "bot", true);
     const part = discord.addMessage(source.id, "Saved summary", at, "bot");
-    yield* journalStatus(api, "20", "bot", pending, readyManifest(source.id, [part]));
+    yield* journalStatus(pending, readyManifest(source.id, [part]));
     expect(yield* invoke()).toBe(0);
     expect(discord.threads.get(source.id)?.thread_metadata.archived).toBe(true);
     expect(

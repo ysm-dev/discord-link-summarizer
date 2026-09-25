@@ -16,18 +16,10 @@ import {
   adoptInProgress,
   beginScan,
   dueJournalIds,
-  pruneJournal,
   rewindRecent,
   scanPages,
-  settleRecord,
 } from "./channel-discovery.ts";
-import {
-  indexRecords,
-  openChannelRecord,
-  readJournal,
-  type ChannelRecord,
-  type Journal,
-} from "./channel-record.ts";
+import { openChannelRecord, readJournal, settleRecord, type Journal } from "./channel-record.ts";
 import { Discord, DiscordLive, type DiscordApi } from "./discord-client.ts";
 import type { DiscordThread } from "./discord-schema.ts";
 import { linkFromPost, linkPostState } from "./link-post.ts";
@@ -35,6 +27,7 @@ import { OpenCode } from "./opencode-client.ts";
 import { OpenCodeServer } from "./opencode-server.ts";
 import { workOn } from "./run-attempt.ts";
 import { SessionPublication } from "./session-publication.ts";
+import { ProgressStore } from "./progress-store.ts";
 import { normalLowerBound } from "./window.ts";
 
 type Channel = Settings["channels"][number];
@@ -275,16 +268,12 @@ const reportDry = (
   bot: string,
   settings: Settings,
   valid: readonly Resolved[],
-  indexed: ReadonlyMap<string, { parent: string; record: ChannelRecord }>,
   deadline: number,
 ) =>
   Effect.gen(function* () {
     for (const resolved of valid) {
       const { channel } = resolved;
-      const found = indexed.get(channel.id);
-      const journal = found
-        ? yield* readJournal(api, settings.stateChannelId, bot, found.parent, found.record)
-        : undefined;
+      const journal = yield* readJournal(channel.id);
       const since = DateTime.toEpochMillis(channel.since);
       const normal = normalLowerBound(
         channel.since,
@@ -320,18 +309,9 @@ const discover = (
   Effect.gen(function* () {
     const journals = new Map<string, Journal>();
     for (const { channel, guild } of valid) {
-      let journal: Journal = (yield* openChannelRecord(
-        api,
-        settings.stateChannelId,
-        channel.id,
-        channel.since,
-        settings.horizon,
-        bot,
-        false,
-      )).journal!;
+      let journal: Journal = yield* openChannelRecord(channel.id, channel.since, settings.horizon);
       journal = yield* rewindRecent(
         api,
-        settings.stateChannelId,
         bot,
         journal,
         channel.since,
@@ -342,12 +322,9 @@ const discover = (
             Duration.toMillis(settings.runBudget) / (2 * valid.length),
         ),
       );
-      journal = yield* adoptInProgress(api, settings.stateChannelId, bot, journal, guild, budget);
-      journal = yield* settleRecord(api, settings.stateChannelId, journal);
-      yield* pruneJournal(api, bot, journal).pipe(
-        Effect.catch((error) => Effect.logWarning(`Journal cleanup deferred: ${String(error)}`)),
-      );
-      journals.set(channel.id, yield* beginScan(api, settings.stateChannelId, journal));
+      journal = yield* adoptInProgress(api, bot, journal, guild, budget);
+      journal = yield* settleRecord(journal);
+      journals.set(channel.id, yield* beginScan(api, journal));
     }
     while (
       [...journals.values()].some((j) => j.record.phase === "scan") &&
@@ -356,7 +333,7 @@ const discover = (
       for (const { channel } of valid) {
         const journal = journals.get(channel.id)!;
         if ((yield* Clock.currentTimeMillis) < budget)
-          journals.set(channel.id, yield* scanPages(api, settings.stateChannelId, bot, journal, 1));
+          journals.set(channel.id, yield* scanPages(api, bot, journal, 1));
       }
     }
     return journals;
@@ -381,15 +358,16 @@ export const run = (
         new RunFailure({ message: "Machine clock differs from Discord by more than 60 seconds" }),
       );
     const { valid, skipped } = yield* preflight(api, settings);
-    // A state-channel failure aborts before even one watched-channel mutation.
-    const indexed = yield* indexRecords(api, settings.stateChannelId, identity.user.id);
+    const store = yield* ProgressStore;
+    yield* store.owner(identity.user.id);
+    // Decode all configured records before mutating Discord.
+    for (const { channel } of valid) yield* readJournal(channel.id);
     if (dryRun) {
       yield* reportDry(
         api,
         identity.user.id,
         settings,
         valid,
-        indexed,
         started +
           Duration.toMillis(settings.runBudget) +
           Duration.toMillis(settings.summaryTimeout),
@@ -442,7 +420,6 @@ export const run = (
               api,
               client,
               publication,
-              settings.stateChannelId,
               identity.user.id,
               settings,
               journals.get(channelId)!,
@@ -454,18 +431,7 @@ export const run = (
         { concurrency: settings.concurrency },
       );
       for (const { channel } of valid) {
-        const latest = journals.get(channel.id)!;
-        const refreshed = yield* readJournal(
-          api,
-          settings.stateChannelId,
-          identity.user.id,
-          latest.parent,
-          latest.record,
-        );
-        const settled = yield* settleRecord(api, settings.stateChannelId, refreshed);
-        yield* pruneJournal(api, identity.user.id, settled).pipe(
-          Effect.catch((error) => Effect.logWarning(`Journal cleanup deferred: ${String(error)}`)),
-        );
+        yield* settleRecord(journals.get(channel.id)!);
       }
       return skipped ? 1 : 0;
     }).pipe(Effect.provide(layer));

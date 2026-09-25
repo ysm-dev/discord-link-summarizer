@@ -1,8 +1,7 @@
-import { expect, it } from "@effect/vitest";
+import { expect, it } from "./progress-fixture.ts";
 import { Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
 import { journalStatus } from "../src/channel-record.ts";
-import { fakeApi } from "./discord-api-fixture.ts";
 import { at, captureLogs, seedJournal, setup, sinceDaysAgo, waitForFault } from "./run-fixture.ts";
 
 const day = 86_400_000;
@@ -38,7 +37,7 @@ for (const journaled of [false, true])
               if (journaled) {
                 const journal = yield* seedJournal(discord, source);
                 if (state === "done")
-                  yield* journalStatus(yield* fakeApi(discord), "20", "bot", journal, {
+                  yield* journalStatus(journal, {
                     id: source.id,
                     state: "terminal",
                   });

@@ -1,4 +1,4 @@
-import { expect, it } from "@effect/vitest";
+import { expect, it } from "./progress-fixture.ts";
 import { Effect } from "effect";
 import { at, seedJournal, setup } from "./run-fixture.ts";
 

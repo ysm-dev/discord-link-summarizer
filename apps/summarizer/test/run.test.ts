@@ -1,7 +1,8 @@
-import { expect, it } from "@effect/vitest";
+import { expect, it } from "./progress-fixture.ts";
 import { Effect, Fiber, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { openChannelRecord, persistReady } from "../src/channel-record.ts";
+import { ProgressStore } from "../src/progress-store.ts";
 import { decodeConfig } from "../src/config.ts";
 import { fakeApi } from "./discord-api-fixture.ts";
 import { at, config, failureSetup, rejectRename, seedJournal, setup } from "./run-fixture.ts";
@@ -74,7 +75,7 @@ it.effect("commits a seeded READY draft after a crash without another session", 
     discord.addMessage(post.id, "⏳ 요약 중 (3/3)", at, "bot");
     const human = discord.addMessage(post.id, "Keep this reply", at, "human");
     const part = discord.addMessage(post.id, "summary", at + 1, "bot");
-    yield* persistReady(api, "20", "bot", journal, post.id, [part]);
+    yield* persistReady(api, "bot", journal, post.id, [part]);
     expect(yield* invoke()).toBe(0);
     expect(discord.messages.get(post.id)?.map((message) => message.content)).toEqual([
       "Keep this reply",
@@ -238,17 +239,8 @@ it.effect(
       expect(yield* invoke()).toBe(0);
       expect(discord.threads.get(post.id)?.name).toBe("⚠️ 요약");
       expect(discord.messages.get(post.id)).toHaveLength(3);
-      const api = yield* fakeApi(discord);
       const settings = yield* decodeConfig(config, "/home/test");
-      const record = (yield* openChannelRecord(
-        api,
-        "20",
-        "10",
-        settings.since,
-        settings.horizon,
-        "bot",
-        true,
-      )).journal!;
+      const record = yield* openChannelRecord("10", settings.since, settings.horizon);
       expect(BigInt(record.record.floor)).toBeGreaterThanOrEqual(BigInt(post.id));
       expect(record.entries.has(post.id)).toBe(false);
     }),
@@ -399,13 +391,18 @@ it.effect("does not let an edited completed post trigger a second summary", () =
   }),
 );
 
-it.effect("preflights the state channel and bot-wide errors before writing", () =>
+it.effect("preflights database ownership and bot-wide errors before writing", () =>
   Effect.gen(function* () {
     const { discord, invoke, getStarted } = yield* setup();
     discord.addMessage("10", "https://example.test/a", at - 1000);
-    discord.addChannel("20", "guild", 15);
-    expect((yield* Effect.flip(invoke())).message).toContain("State channel must be a text");
-    discord.addChannel("20");
+    const store = yield* ProgressStore;
+    expect(
+      (yield* Effect.flip(
+        invoke().pipe(
+          Effect.provideService(ProgressStore, { ...store, owner: () => store.owner("other-bot") }),
+        ),
+      )).message,
+    ).toContain("different bot");
     discord.faults.push({ method: "GET", path: "/channels/10", status: 401 });
     expect(yield* Effect.flip(invoke())).toBeDefined();
     expect(discord.threads.size).toBe(0);
@@ -450,7 +447,7 @@ it.effect("does not backfill beyond the onboarding Horizon across message pages"
       );
     const fresh = discord.addMessage("10", "https://example.test/fresh", at - 1000);
     expect(yield* invoke()).toBe(0);
-    expect(discord.threads.size).toBe(2); // Summary Thread and state-channel journal
+    expect(discord.threads.size).toBe(1);
     expect(discord.threads.get(fresh.id)?.thread_metadata.archived).toBe(true);
     expect(openCode.requests.filter((request) => request === "POST /api/session")).toHaveLength(1);
   }),

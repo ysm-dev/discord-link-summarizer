@@ -3,6 +3,4 @@ opencode:
   directory: /Users/chris/git/ysmdev/translate
   agent: summarizer
 since: "2026-09-25T00:00:00+09:00"
-# Replace null before any Run, including --dry-run. Dedicated text channel, never a Watched Channel.
-state_channel_id: null
 channels: []
