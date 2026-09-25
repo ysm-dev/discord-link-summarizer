@@ -41,15 +41,67 @@ type Channel = Settings["channels"][number];
 type Resolved = { readonly channel: Channel; readonly guild: string };
 class RunFailure extends Data.TaggedError("RunFailure")<{ readonly message: string }> {}
 
-const emptyCounts = () => ({ pending: 0, inProgress: 0, givenUp: 0 });
+const emptyCounts = () => ({ inProgress: 0, givenUp: 0 });
 const tally = (
   counts: ReturnType<typeof emptyCounts>,
   state: ReturnType<typeof linkPostState>,
 ) => ({
-  pending: counts.pending + Number(state === "pending"),
   inProgress: counts.inProgress + Number(state === "in-progress"),
   givenUp: counts.givenUp + Number(state === "given-up"),
 });
+
+const drySource = (api: DiscordApi, channel: string, id: string) =>
+  api.getMessage(channel, id).pipe(
+    Effect.catchIf(
+      (error) => error.kind === "not-found",
+      () => Effect.succeed(undefined),
+    ),
+  );
+
+const directDryThread = (api: DiscordApi, parent: string, id: string) =>
+  Effect.gen(function* () {
+    const thread = yield* api.getChannel(id).pipe(
+      Effect.catchIf(
+        (error) => error.kind === "not-found",
+        () => Effect.succeed(undefined),
+      ),
+    );
+    if (!thread) return undefined;
+    if (
+      thread.type !== 11 ||
+      thread.parent_id !== parent ||
+      thread.owner_id === undefined ||
+      thread.name === undefined ||
+      thread.thread_metadata === undefined
+    )
+      return yield* new RunFailure({ message: `Invalid Summary Thread ${id}` });
+    return { id: thread.id, owner_id: thread.owner_id, name: thread.name };
+  });
+
+const reconcileUnlisted = (
+  api: DiscordApi,
+  bot: string,
+  channel: string,
+  withoutThread: Set<string>,
+  deadline: number,
+  initial: ReturnType<typeof emptyCounts>,
+) =>
+  Effect.gen(function* () {
+    let counts = initial;
+    for (const id of withoutThread) {
+      if ((yield* Clock.currentTimeMillis) >= deadline) return { counts, partial: true };
+      const source = yield* drySource(api, channel, id);
+      if (!source || !linkFromPost(source, bot)) {
+        withoutThread.delete(id);
+        continue;
+      }
+      const thread = yield* directDryThread(api, channel, id);
+      if (!thread) continue;
+      withoutThread.delete(id);
+      counts = tally(counts, linkPostState(thread, bot));
+    }
+    return { counts, partial: false };
+  });
 
 const dryJournalStates = (
   api: DiscordApi,
@@ -57,25 +109,23 @@ const dryJournalStates = (
   channel: string,
   since: number,
   seen: Set<string>,
+  withoutThread: Set<string>,
   deadline: number,
   journal?: Journal,
 ) =>
   Effect.gen(function* () {
     let counts = emptyCounts();
-    for (const [id, status] of journal?.entries ?? []) {
+    if (!journal) return { counts, partial: false };
+    for (const [id, status] of journal.entries) {
       if (seen.has(id) || status?.state === "terminal") continue;
       if ((yield* Clock.currentTimeMillis) >= deadline) return { counts, partial: true };
-      const source = yield* api.getMessage(channel, id).pipe(
-        Effect.catchIf(
-          (error) => error.kind === "not-found",
-          () => Effect.succeed(undefined),
-        ),
-      );
+      const source = yield* drySource(api, channel, id);
       if (source && linkFromPost(source, bot)) {
         const state = linkPostState(source.thread, bot);
         if (Date.parse(source.timestamp) >= since || state === "in-progress") {
           seen.add(id);
-          counts = tally(counts, state);
+          if (source.thread) counts = tally(counts, state);
+          else withoutThread.add(id);
         }
       }
     }
@@ -87,6 +137,7 @@ const dryThreadStates = (
   bot: string,
   resolved: Resolved,
   seen: Set<string>,
+  withoutThread: Set<string>,
   deadline: number,
   journal?: Journal,
 ) =>
@@ -94,23 +145,21 @@ const dryThreadStates = (
     let counts = emptyCounts();
     const consider = (thread: DiscordThread) =>
       Effect.gen(function* () {
+        const candidate = withoutThread.has(thread.id);
         if (
           thread.parent_id !== resolved.channel.id ||
-          thread.owner_id !== bot ||
-          !thread.name.startsWith("⏳ ") ||
-          seen.has(thread.id) ||
-          journal?.entries.get(thread.id)?.state === "terminal"
+          (seen.has(thread.id) && !candidate) ||
+          (!candidate &&
+            (thread.owner_id !== bot ||
+              !thread.name.startsWith("⏳ ") ||
+              journal?.entries.get(thread.id)?.state === "terminal"))
         )
           return;
-        const source = yield* api.getMessage(resolved.channel.id, thread.id).pipe(
-          Effect.catchIf(
-            (error) => error.kind === "not-found",
-            () => Effect.succeed(undefined),
-          ),
-        );
+        const source = yield* drySource(api, resolved.channel.id, thread.id);
+        withoutThread.delete(thread.id);
         if (source && linkFromPost(source, bot)) {
           seen.add(thread.id);
-          counts = tally(counts, "in-progress");
+          counts = tally(counts, linkPostState(thread, bot));
         }
       });
     for (const thread of yield* api.listActiveThreads(resolved.guild)) {
@@ -125,11 +174,12 @@ const dryThreadStates = (
         if ((yield* Clock.currentTimeMillis) >= deadline) return { counts, partial: true };
         yield* consider(thread);
       }
-      if (!page.has_more) return { counts, partial: false };
+      if (!page.has_more) break;
       before = page.threads.at(-1)?.thread_metadata.archive_timestamp;
       if (!before)
         return yield* new RunFailure({ message: "Archived thread pagination lacks a cursor" });
     }
+    return yield* reconcileUnlisted(api, bot, resolved.channel.id, withoutThread, deadline, counts);
   });
 
 const preflight = (api: DiscordApi, config: Settings) =>
@@ -164,6 +214,7 @@ const dryCounts = (
   Effect.gen(function* () {
     let counts = emptyCounts();
     const seen = new Set<string>();
+    const withoutThread = new Set<string>();
     let before: string | undefined;
     let partial = false;
     for (;;) {
@@ -171,7 +222,8 @@ const dryCounts = (
       for (const message of page) {
         if (Date.parse(message.timestamp) < bound || !linkFromPost(message, bot)) continue;
         seen.add(message.id);
-        counts = tally(counts, linkPostState(message.thread, bot));
+        if (message.thread) counts = tally(counts, linkPostState(message.thread, bot));
+        else withoutThread.add(message.id);
       }
       if (page.length < 100 || Date.parse(page.at(-1)!.timestamp) < bound) break;
       before = page.at(-1)!.id;
@@ -181,7 +233,7 @@ const dryCounts = (
         break;
       }
     }
-    if (partial) return { ...counts, partial };
+    if (partial) return { ...counts, pending: withoutThread.size, partial };
     // An older started Link remains work even after Since or Horizon moves forward.
     const extra = yield* dryJournalStates(
       api,
@@ -189,19 +241,29 @@ const dryCounts = (
       resolved.channel.id,
       since,
       seen,
+      withoutThread,
       deadline,
       journal,
     );
     const combined = {
-      pending: counts.pending + extra.counts.pending,
       inProgress: counts.inProgress + extra.counts.inProgress,
       givenUp: counts.givenUp + extra.counts.givenUp,
     };
-    if (extra.partial) return { ...combined, partial: true };
-    const threads = yield* dryThreadStates(api, bot, resolved, seen, deadline, journal);
+    if (extra.partial) return { ...combined, pending: withoutThread.size, partial: true };
+    const threads = yield* dryThreadStates(
+      api,
+      bot,
+      resolved,
+      seen,
+      withoutThread,
+      deadline,
+      journal,
+    );
     return {
       ...combined,
+      pending: withoutThread.size,
       inProgress: combined.inProgress + threads.counts.inProgress,
+      givenUp: combined.givenUp + threads.counts.givenUp,
       partial: threads.partial,
     };
   });

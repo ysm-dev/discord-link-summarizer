@@ -29,6 +29,7 @@ import { DiscordFailure, type DiscordApi } from "../src/discord-client.ts";
 import type { Journal } from "../src/channel-record.ts";
 import type { DiscordMessage } from "../src/discord-schema.ts";
 import { FakeDiscord } from "./discord-fake.ts";
+import { at as runAt, openRecord, setup } from "./run-fixture.ts";
 
 const archivedLinks = (fake: FakeDiscord) =>
   Array.from({ length: 101 }, (_, index) => {
@@ -114,12 +115,21 @@ it.effect("does not claim an already-created onboarding thread a second time", (
   }),
 );
 
-it.effect("a confirmed journal page survives a record reload", () =>
+it.effect("a confirmed journal page is worked after a Run reloads the record", () =>
   Effect.gen(function* () {
-    const { api } = yield* prepare;
-    const journal = (yield* open(api)).journal!;
-    yield* journalPage(api, "bot", journal, "once", ["1"]);
-    expect((yield* open(api)).journal?.entries.has("1")).toBe(true);
+    const { discord, invoke } = yield* setup();
+    const source = discord.addMessage("10", "https://example.test/reloaded", runAt - 100);
+    const { api, journal } = yield* openRecord(discord);
+    yield* journalPage(api, "bot", journal, "once", [source.id]);
+    expect(yield* invoke()).toBe(0);
+    expect(discord.threads.get(source.id)?.thread_metadata.archived).toBe(true);
+    expect(discord.messages.get(source.id)?.filter((m) => m.content === "안녕하세요")).toHaveLength(
+      1,
+    );
+    expect(yield* invoke()).toBe(0);
+    expect(discord.messages.get(source.id)?.filter((m) => m.content === "안녕하세요")).toHaveLength(
+      1,
+    );
   }),
 );
 
