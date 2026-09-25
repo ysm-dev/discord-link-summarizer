@@ -41,12 +41,11 @@ type Channel = Settings["channels"][number];
 type Resolved = { readonly channel: Channel; readonly guild: string };
 class RunFailure extends Data.TaggedError("RunFailure")<{ readonly message: string }> {}
 
-const emptyCounts = () => ({ pending: 0, inProgress: 0, givenUp: 0 });
+const emptyCounts = () => ({ inProgress: 0, givenUp: 0 });
 const tally = (
   counts: ReturnType<typeof emptyCounts>,
   state: ReturnType<typeof linkPostState>,
 ) => ({
-  pending: counts.pending + Number(state === "pending"),
   inProgress: counts.inProgress + Number(state === "in-progress"),
   givenUp: counts.givenUp + Number(state === "given-up"),
 });
@@ -57,6 +56,7 @@ const dryJournalStates = (
   channel: string,
   since: number,
   seen: Set<string>,
+  withoutThread: Set<string>,
   deadline: number,
   journal?: Journal,
 ) =>
@@ -75,7 +75,8 @@ const dryJournalStates = (
         const state = linkPostState(source.thread, bot);
         if (Date.parse(source.timestamp) >= since || state === "in-progress") {
           seen.add(id);
-          counts = tally(counts, state);
+          if (source.thread) counts = tally(counts, state);
+          else withoutThread.add(id);
         }
       }
     }
@@ -87,6 +88,7 @@ const dryThreadStates = (
   bot: string,
   resolved: Resolved,
   seen: Set<string>,
+  withoutThread: Set<string>,
   deadline: number,
   journal?: Journal,
 ) =>
@@ -98,7 +100,7 @@ const dryThreadStates = (
           thread.parent_id !== resolved.channel.id ||
           thread.owner_id !== bot ||
           !thread.name.startsWith("⏳ ") ||
-          seen.has(thread.id) ||
+          (seen.has(thread.id) && !withoutThread.has(thread.id)) ||
           journal?.entries.get(thread.id)?.state === "terminal"
         )
           return;
@@ -110,6 +112,7 @@ const dryThreadStates = (
         );
         if (source && linkFromPost(source, bot)) {
           seen.add(thread.id);
+          withoutThread.delete(thread.id);
           counts = tally(counts, "in-progress");
         }
       });
@@ -164,6 +167,7 @@ const dryCounts = (
   Effect.gen(function* () {
     let counts = emptyCounts();
     const seen = new Set<string>();
+    const withoutThread = new Set<string>();
     let before: string | undefined;
     let partial = false;
     for (;;) {
@@ -171,7 +175,8 @@ const dryCounts = (
       for (const message of page) {
         if (Date.parse(message.timestamp) < bound || !linkFromPost(message, bot)) continue;
         seen.add(message.id);
-        counts = tally(counts, linkPostState(message.thread, bot));
+        if (message.thread) counts = tally(counts, linkPostState(message.thread, bot));
+        else withoutThread.add(message.id);
       }
       if (page.length < 100 || Date.parse(page.at(-1)!.timestamp) < bound) break;
       before = page.at(-1)!.id;
@@ -181,7 +186,7 @@ const dryCounts = (
         break;
       }
     }
-    if (partial) return { ...counts, partial };
+    if (partial) return { ...counts, pending: withoutThread.size, partial };
     // An older started Link remains work even after Since or Horizon moves forward.
     const extra = yield* dryJournalStates(
       api,
@@ -189,18 +194,27 @@ const dryCounts = (
       resolved.channel.id,
       since,
       seen,
+      withoutThread,
       deadline,
       journal,
     );
     const combined = {
-      pending: counts.pending + extra.counts.pending,
       inProgress: counts.inProgress + extra.counts.inProgress,
       givenUp: counts.givenUp + extra.counts.givenUp,
     };
-    if (extra.partial) return { ...combined, partial: true };
-    const threads = yield* dryThreadStates(api, bot, resolved, seen, deadline, journal);
+    if (extra.partial) return { ...combined, pending: withoutThread.size, partial: true };
+    const threads = yield* dryThreadStates(
+      api,
+      bot,
+      resolved,
+      seen,
+      withoutThread,
+      deadline,
+      journal,
+    );
     return {
       ...combined,
+      pending: withoutThread.size,
       inProgress: combined.inProgress + threads.counts.inProgress,
       partial: threads.partial,
     };

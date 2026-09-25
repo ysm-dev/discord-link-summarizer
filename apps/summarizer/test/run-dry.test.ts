@@ -361,6 +361,7 @@ for (const [minutes, partial] of [
       const { discord, invoke } = yield* setup();
       const older = discord.addMessage("10", "https://example.test/older", at - 9 * 86_400_000);
       const newer = discord.addMessage("10", "https://example.test/newer", at - 8 * 86_400_000);
+      discord.addMessage("10", "https://example.test/recent", at - 100);
       const api = yield* fakeApi(discord);
       const journal = yield* seedJournal(discord, older);
       yield* journalPage(api, "bot", journal, "more", [newer.id]);
@@ -392,5 +393,6 @@ for (const [minutes, partial] of [
       yield* TestClock.adjust(`${minutes} minutes`);
       expect(yield* Fiber.join(fiber)).toBe(0);
       expect(logs.join(" ").includes("(partial)")).toBe(partial);
+      expect(logs.join(" ")).toContain(`Pending ${partial ? 2 : 3}, In progress 0, Given up 0`);
     }),
   );

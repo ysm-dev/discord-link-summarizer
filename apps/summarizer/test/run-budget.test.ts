@@ -246,7 +246,7 @@ it.effect("labels a deadline-limited dry-run scan partial without mutations", ()
     yield* waitFor(() => discord.requests.some((request) => request.path.includes("&before=")));
     yield* TestClock.adjust("30 minutes");
     expect(yield* Fiber.join(fiber)).toBe(0);
-    expect(logs.join(" ")).toContain("(partial)");
+    expect(logs.join(" ")).toContain("Pending 200, In progress 0, Given up 0 (partial)");
     expect(discord.requests.some((request) => request.method !== "GET")).toBe(false);
     expect(getStarted()).toBe(0);
   }),
