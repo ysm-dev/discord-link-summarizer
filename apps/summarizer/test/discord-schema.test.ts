@@ -27,8 +27,14 @@ it("decodes exactly the used Discord wire fields and rejects missing required fi
   expect(() => decode(DiscordUser(), {})).toThrow(/id/);
   expect(
     decode(DiscordChannel(), { id: "news", type: 5, guild_id: "guild", name: "ignored" }),
-  ).toEqual({ id: "news", type: 5, guild_id: "guild" });
+  ).toEqual({ id: "news", type: 5, guild_id: "guild", name: "ignored" });
   expect(() => decode(DiscordChannel(), { id: "news", type: "text" })).toThrow(/type/);
+  expect(decode(DiscordChannel(), { ...thread, type: 11 })).toMatchObject({
+    thread_metadata: { archived: false },
+  });
+  expect(() => decode(DiscordChannel(), { ...thread, type: 11, thread_metadata: {} })).toThrow(
+    /archived/,
+  );
   expect(decode(DiscordThread(), { ...thread, member_count: 3 })).toEqual(thread);
   expect(() => decode(DiscordThread(), { ...thread, owner_id: undefined })).toThrow(/owner_id/);
   expect(() => decode(DiscordThread(), { ...thread, thread_metadata: {} })).toThrow(/archived/);

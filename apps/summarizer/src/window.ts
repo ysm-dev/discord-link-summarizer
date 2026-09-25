@@ -7,6 +7,3 @@ export const normalLowerBound = (
   horizon: Duration.Duration,
 ): number =>
   Math.max(DateTime.toEpochMillis(since), DateTime.toEpochMillis(now) - Duration.toMillis(horizon));
-
-export const withinWindow = (post: DateTime.Utc, lowerBound: number): boolean =>
-  DateTime.toEpochMillis(post) >= lowerBound;

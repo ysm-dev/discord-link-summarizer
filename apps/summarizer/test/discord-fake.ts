@@ -12,7 +12,10 @@ type Fault = {
   drop?: boolean;
   after?: boolean;
   noDate?: boolean;
+  pause?: number;
 };
+
+const pauseFor = (fault?: Fault) => (fault?.pause ? Effect.sleep(fault.pause) : Effect.void);
 
 /** Mutable HTTP-edge fixture: concurrent thread creation is arbitrated by the server, not the client. */
 export class FakeDiscord {
@@ -90,6 +93,7 @@ export class FakeDiscord {
           (fault) => fault.method === request.method && path.startsWith(fault.path),
         );
         const fault = index < 0 ? undefined : this.faults.splice(index, 1)[0];
+        yield* pauseFor(fault);
         if (fault?.drop && !fault.after)
           return yield* new HttpClientError.HttpClientError({
             reason: new HttpClientError.TransportError({ request }),
@@ -207,7 +211,7 @@ export class FakeDiscord {
     if (thread)
       return {
         status: 200,
-        body: { id, guild_id: this.channels.get(thread.parent_id)?.guild_id, type: 11 },
+        body: { ...thread, guild_id: this.channels.get(thread.parent_id)?.guild_id, type: 11 },
       };
     return { status: 404, body: { code: 10003 } };
   }
@@ -216,6 +220,13 @@ export class FakeDiscord {
     const item = this.messages.get(id)?.find((message) => message.id === messageId);
     if (item) return { status: 200, body: item };
     return { status: 404, body: { code: 10008 } };
+  }
+
+  private routePostMessage(id: string, body: Schema.Json | undefined, now: number) {
+    if (this.threads.get(id)?.thread_metadata.archived)
+      return { status: 403, body: { code: 50083 } };
+    const data = Schema.decodeUnknownSync(Schema.Struct({ content: Schema.String }))(body);
+    return { status: 200, body: this.addMessage(id, data.content, now, this.bot.id) };
   }
 
   private routeMessage(
@@ -240,10 +251,7 @@ export class FakeDiscord {
     }
     if (parts[4] === "threads" && method === "POST")
       return this.routeStartThread(id, parts[3] ?? "", list, body, now);
-    if (method === "POST") {
-      const data = Schema.decodeUnknownSync(Schema.Struct({ content: Schema.String }))(body);
-      return { status: 200, body: this.addMessage(id, data.content, now, this.bot.id) };
-    }
+    if (method === "POST") return this.routePostMessage(id, body, now);
     if (method === "DELETE") {
       if (!list.some((item) => item.id === parts[3])) return { status: 404, body: { code: 10008 } };
       this.messages.set(
@@ -256,7 +264,11 @@ export class FakeDiscord {
       const data = Schema.decodeUnknownSync(Schema.Struct({ content: Schema.String }))(body);
       const message = list.find((item) => item.id === parts[3]);
       if (message === undefined) return { status: 404, body: { code: 10008 } };
-      const updated = { ...message, content: data.content };
+      const updated = {
+        ...message,
+        content: data.content,
+        edited_timestamp: new Date(now).toISOString(),
+      };
       this.messages.set(
         id,
         list.map((item) => (item.id === updated.id ? updated : item)),

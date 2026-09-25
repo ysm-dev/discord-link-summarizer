@@ -1,6 +1,6 @@
-import { DateTime, Duration, Effect, Redacted } from "effect";
+import { DateTime, Duration, Effect } from "effect";
 import * as TestClock from "effect/testing/TestClock";
-import { makeDiscord, type DiscordApi } from "../src/discord-client.ts";
+import type { DiscordApi } from "../src/discord-client.ts";
 import {
   journalPage,
   journalStatus,
@@ -9,6 +9,7 @@ import {
 } from "../src/channel-record.ts";
 import { beginScan, scanPages, settleRecord } from "../src/channel-discovery.ts";
 import { FakeDiscord } from "./discord-fake.ts";
+import { fakeApi } from "./discord-api-fixture.ts";
 
 export const now = Date.parse("2026-09-25T12:00:00Z");
 export const since = DateTime.makeUnsafe(now - 10 * 86400000);
@@ -18,7 +19,7 @@ export const prepare = Effect.gen(function* () {
   const fake = new FakeDiscord();
   fake.addChannel("10");
   fake.addChannel("20");
-  const api = yield* makeDiscord(Redacted.make("secret")).pipe(Effect.provide(fake.layer));
+  const api = yield* fakeApi(fake);
   return { fake, api };
 });
 export const open = (api: DiscordApi) =>

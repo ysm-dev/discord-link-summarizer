@@ -1,20 +1,15 @@
 import { expect, it } from "@effect/vitest";
 import { Effect, Fiber, Layer, Redacted } from "effect";
 import * as TestClock from "effect/testing/TestClock";
-import {
-  Discord,
-  type DiscordApi,
-  DiscordFailure,
-  DiscordLive,
-  makeDiscord,
-} from "../src/discord-client.ts";
+import { Discord, type DiscordApi, DiscordFailure, DiscordLive } from "../src/discord-client.ts";
 import { FakeDiscord } from "./discord-fake.ts";
+import { fakeApi } from "./discord-api-fixture.ts";
 
 const at = Date.parse("2026-09-25T00:00:00Z");
 const setup = Effect.gen(function* () {
   const fake = new FakeDiscord();
   fake.addChannel("news");
-  const api = yield* makeDiscord(Redacted.make("secret")).pipe(Effect.provide(fake.layer));
+  const api = yield* fakeApi(fake);
   return { fake, api };
 });
 

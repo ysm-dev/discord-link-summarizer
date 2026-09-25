@@ -1,8 +1,8 @@
-import { createHash } from "node:crypto";
 import { Clock, Data, DateTime, Duration, Effect, Exit, Schema } from "effect";
-import type { DiscordApi } from "./discord-client.ts";
+import type { DiscordApi, DiscordFailure } from "./discord-client.ts";
 import type { DiscordMessage } from "./discord-schema.ts";
 import { normalLowerBound } from "./window.ts";
+import { readyManifest, verifyReady } from "./ready.ts";
 
 const snowflake = Schema.String.check(
   Schema.makeFilter((s) => (/^(?:0|[1-9]\d*)$/.test(s) ? undefined : "invalid Snowflake")),
@@ -23,6 +23,9 @@ const recordSchema = Schema.Struct({
   high: Schema.NullOr(snowflake),
   before: Schema.NullOr(snowflake),
   phase: Schema.Literals(["idle", "scan", "work"]),
+  checkpoint: Schema.optionalKey(snowflake),
+  archiveBefore: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  journalReady: Schema.optionalKey(Schema.Boolean),
 });
 const batchSchema = Schema.Struct({ key: Schema.String, ids: Schema.Array(snowflake) });
 const statusSchema = Schema.Struct({
@@ -61,16 +64,22 @@ const parse = <S extends Schema.ConstraintDecoder<Schema.Schema.Type<S>>>(
   Schema.decodeUnknownEffect(Schema.fromJsonString(schema), { onExcessProperty: "error" })(
     content.slice(kind.length + 6),
   ).pipe(Effect.mapError((error) => fail(`Malformed ${kind} marker: ${String(error)}`)));
-const allMessages = (api: DiscordApi, channel: string) =>
+const allMessages = (api: DiscordApi, channel: string, checkpoint?: string) =>
   Effect.gen(function* () {
     const seen: DiscordMessage[] = [];
     for (;;) {
       const page = yield* api.listMessages(channel, seen.at(-1)?.id);
-      seen.push(...page);
-      if (page.length < 100) return seen;
+      const newer = checkpoint
+        ? page.filter((message) => BigInt(message.id) > BigInt(checkpoint))
+        : page;
+      seen.push(...newer);
+      if (page.length < 100 || newer.length < page.length) return seen;
     }
   });
 const same = (a: object, b: object) => JSON.stringify(a) === JSON.stringify(b);
+const sameRecord = (a: ChannelRecord, b: ChannelRecord) =>
+  JSON.stringify(Object.entries(a).toSorted(([left], [right]) => left.localeCompare(right))) ===
+  JSON.stringify(Object.entries(b).toSorted(([left], [right]) => left.localeCompare(right)));
 const owned = (message: DiscordMessage, botId: string) =>
   message.author.id === botId && message.type === 0;
 const validStatus = (status: Status) =>
@@ -141,6 +150,7 @@ const recordJournalMessage = (
     if (message.content.startsWith("DLS1 parts ")) {
       return yield* readPart(message.content, fragments);
     }
+    if (message.content === encode("checkpoint", {})) return void 0;
     if (!message.content.startsWith("DLS1 status ")) return yield* fail("Malformed journal entry");
     const status = yield* hydrateStatus(
       yield* parse(statusSchema, message.content, "status"),
@@ -205,16 +215,23 @@ export const readJournal = (
       ),
     );
     const parentMessage = yield* api.getMessage(stateId, parent);
+    const stored = yield* parse(recordSchema, parentMessage.content, "record");
     if (
       thread.type !== 11 ||
       thread.id !== parent ||
       parentMessage.author.id !== botId ||
-      parentMessage.content !== encode("record", record) ||
+      !sameRecord(stored, record) ||
+      thread.owner_id !== botId ||
       parentMessage.thread?.owner_id !== botId ||
       parentMessage.thread.parent_id !== stateId
     )
       return yield* fail("Missing or foreign Channel Record journal");
-    const entries = yield* readEntries(yield* allMessages(api, parent), botId);
+    if (record.checkpoint) {
+      const marker = yield* api.getMessage(parent, record.checkpoint);
+      if (!owned(marker, botId) || marker.content !== encode("checkpoint", {}))
+        return yield* fail("Invalid Channel Record checkpoint");
+    }
+    const entries = yield* readEntries(yield* allMessages(api, parent, record.checkpoint), botId);
     return { record, parent, entries } satisfies Journal;
   });
 
@@ -224,16 +241,17 @@ const writeOnce = (
   botId: string,
   content: string,
   identity: (content: string) => boolean,
+  checkpoint?: string,
 ) =>
   Effect.gen(function* () {
-    const existing = (yield* allMessages(api, thread)).filter(
+    const existing = (yield* allMessages(api, thread, checkpoint)).filter(
       (m) => owned(m, botId) && identity(m.content),
     );
     if (existing.some((m) => m.content !== content)) return yield* fail("Divergent journal write");
     if (existing.length) return void 0;
     const result = yield* Effect.exit(api.createMessage(thread, content));
     if (Exit.isSuccess(result)) return void 0;
-    const reconciled = (yield* allMessages(api, thread)).filter(
+    const reconciled = (yield* allMessages(api, thread, checkpoint)).filter(
       (m) => owned(m, botId) && identity(m.content),
     );
     if (reconciled.length && reconciled.every((m) => m.content === content)) return void 0;
@@ -263,15 +281,48 @@ export const openChannelRecord = (
   horizon: Duration.Duration,
   botId: string,
   dryRun: boolean,
-) =>
+): Effect.Effect<
+  { readonly journal: Journal | undefined; readonly proposedStart: number | undefined },
+  DiscordFailure | RecordError
+> =>
   Effect.gen(function* () {
     const indexed = yield* indexRecords(api, stateId, botId);
     const found = indexed.get(channel);
-    if (found)
-      return {
-        journal: yield* readJournal(api, stateId, botId, found.parent, found.record),
-        proposedStart: undefined,
-      };
+    if (found) {
+      let journal: Journal = yield* readJournal(
+        api,
+        stateId,
+        botId,
+        found.parent,
+        found.record,
+      ).pipe(
+        Effect.catchIf(
+          (error) =>
+            error.message === "Missing Channel Record journal" &&
+            found.record.journalReady === false,
+          () =>
+            Effect.gen(function* () {
+              const parent = yield* api.getMessage(stateId, found.parent);
+              if (parent.thread) return yield* fail("Missing Channel Record journal");
+              if (!dryRun)
+                yield* Effect.exit(api.startThread(stateId, found.parent, `DLS1 ${channel}`));
+              if (dryRun)
+                return {
+                  record: found.record,
+                  parent: found.parent,
+                  entries: new Map(),
+                } satisfies Journal;
+              return yield* readJournal(api, stateId, botId, found.parent, found.record);
+            }),
+        ),
+      );
+      if (found.record.journalReady === false && !dryRun)
+        journal = yield* updateRecord(api, stateId, journal, {
+          ...found.record,
+          journalReady: true,
+        });
+      return { journal, proposedStart: undefined };
+    }
     const now = yield* Clock.currentTimeMillis;
     const start = normalLowerBound(since, DateTime.makeUnsafe(now), horizon);
     if (dryRun) return { journal: undefined, proposedStart: start };
@@ -284,6 +335,7 @@ export const openChannelRecord = (
       high: null,
       before: null,
       phase: "idle",
+      journalReady: false,
     };
     const content = encode("record", record);
     const response = yield* Effect.exit(api.createMessage(stateId, content));
@@ -293,9 +345,16 @@ export const openChannelRecord = (
     if (matches.length !== 1 || (Exit.isSuccess(response) && response.value.id !== matches[0]!.id))
       return yield* fail("Ambiguous Channel Record creation");
     const parent = matches[0]!.id;
-    yield* Effect.exit(api.startThread(stateId, parent, `DLS1 ${channel}`));
+    const existing = yield* api.getChannel(parent).pipe(
+      Effect.catchIf(
+        (error) => error.kind === "not-found",
+        () => Effect.succeed(undefined),
+      ),
+    );
+    if (!existing) yield* Effect.exit(api.startThread(stateId, parent, `DLS1 ${channel}`));
+    const journal = yield* readJournal(api, stateId, botId, parent, record);
     return {
-      journal: yield* readJournal(api, stateId, botId, parent, record),
+      journal: yield* updateRecord(api, stateId, journal, { ...record, journalReady: true }),
       proposedStart: undefined,
     };
   });
@@ -321,46 +380,19 @@ export const journalPage = (
       const partKey = `${key}:${index}`;
       const content = encode("batch", { key: partKey, ids: chunk });
       if (content.length > 2000) return yield* fail("Journal page key too long");
-      yield* writeOnce(api, journal.parent, botId, content, (text) =>
-        text.startsWith(`DLS1 batch {"key":"${partKey}",`),
+      yield* writeOnce(
+        api,
+        journal.parent,
+        botId,
+        content,
+        (text) => text.startsWith(`DLS1 batch {"key":"${partKey}",`),
+        journal.record.checkpoint,
       );
     }
     const entries = new Map(journal.entries);
     for (const source of ids) if (!entries.has(source)) entries.set(source, undefined);
     return { ...journal, entries } satisfies Journal;
   });
-
-export const readyDigest = (parts: readonly string[]) => {
-  const hash = createHash("sha256");
-  for (const part of parts) {
-    hash.update(String(Buffer.byteLength(part)));
-    hash.update(":");
-    hash.update(part);
-  }
-  return hash.digest("hex");
-};
-export const readyManifest = (source: string, parts: readonly DiscordMessage[]) =>
-  ({
-    id: source,
-    state: "ready" as const,
-    count: parts.length,
-    hash: readyDigest(parts.map((part) => part.content)),
-    parts: parts.map((part) => part.id),
-  }) satisfies Status;
-/** Match explicit message identities, not note-shaped model text. */
-export const verifyReady = (status: Status, messages: readonly DiscordMessage[], botId: string) => {
-  const parts = status.parts?.map((partId) =>
-    messages.find((message) => message.id === partId && message.author.id === botId),
-  );
-  return (
-    status.state === "ready" &&
-    parts !== undefined &&
-    parts.length === status.count &&
-    parts.every((part) => part !== undefined) &&
-    parts.every((part, index) => index === 0 || BigInt(parts[index - 1]!.id) < BigInt(part.id)) &&
-    status.hash === readyDigest(parts.map((part) => part.content))
-  );
-};
 
 /** Read back the exact draft parts before making READY durable. */
 export const persistReady = (
@@ -401,10 +433,16 @@ const writeReadyChunks = (api: DiscordApi, botId: string, journal: Journal, stat
     for (const [index, ids] of chunks.entries()) {
       const fragment = encode("parts", { id: status.id, hash: status.hash, first, index, ids });
       if (fragment.length > 2000) return yield* fail("READY part ID too long");
-      yield* writeOnce(api, journal.parent, botId, fragment, (text) =>
-        text.startsWith(
-          `DLS1 parts {"id":"${status.id}","hash":"${status.hash}","first":"${first}","index":${index},`,
-        ),
+      yield* writeOnce(
+        api,
+        journal.parent,
+        botId,
+        fragment,
+        (text) =>
+          text.startsWith(
+            `DLS1 parts {"id":"${status.id}","hash":"${status.hash}","first":"${first}","index":${index},`,
+          ),
+        journal.record.checkpoint,
       );
     }
     return encode("status", {
@@ -434,7 +472,23 @@ export const journalStatus = (
       content = yield* writeReadyChunks(api, botId, journal, status);
     }
     if (content.length > 2000) return yield* fail("READY manifest too long");
-    yield* writeOnce(api, journal.parent, botId, content, (text) => text === content);
+    // Historical equality cannot dedupe a new transition (pending → terminal → pending → terminal).
+    // Reconcile only the latest marker for this source, never a prior generation.
+    const latest = () =>
+      allMessages(api, journal.parent, journal.record.checkpoint).pipe(
+        Effect.map(
+          (messages) =>
+            messages.find(
+              (message) =>
+                owned(message, botId) &&
+                message.content.startsWith(`DLS1 status {"id":"${status.id}",`),
+            )?.content,
+        ),
+      );
+    if ((yield* latest()) !== content) {
+      yield* Effect.exit(api.createMessage(journal.parent, content));
+      if ((yield* latest()) !== content) return yield* fail("Unreconciled status transition");
+    }
     const confirmed = yield* readJournal(api, stateId, botId, journal.parent, journal.record);
     if (!same(confirmed.entries.get(status.id) ?? {}, status))
       return yield* fail("Unreconciled status transition");

@@ -19,7 +19,7 @@ export const linkFromPost = (message: Message, botId: string): string | undefine
     ? firstLink(message.content)
     : undefined;
 
-export const firstLink = (content: string): string | undefined => {
+const firstLink = (content: string): string | undefined => {
   for (const match of content.matchAll(/https?:\/\/[^\s<>"'`]+/gi)) {
     let link = match[0].replace(/[.,!?;:\]}]+$/u, "");
     // A balanced ')' belongs to a URL path; a sentence's closing ')' does not.

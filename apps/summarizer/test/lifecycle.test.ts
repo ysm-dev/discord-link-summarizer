@@ -8,8 +8,8 @@ import {
   type Note,
   type TimedNote,
 } from "../src/attempt.ts";
-import { firstLink, linkFromPost, linkPostState, threadTitle } from "../src/link-post.ts";
-import { normalLowerBound, withinWindow } from "../src/window.ts";
+import { linkFromPost, linkPostState, threadTitle } from "../src/link-post.ts";
+import { normalLowerBound } from "../src/window.ts";
 
 const at = (minute: number): DateTime.Utc =>
   DateTime.makeUnsafe(1_700_000_000_000 + minute * 60000);
@@ -23,6 +23,8 @@ const message = (id: string, content: string, author: string) => ({
   author: { id: author },
 });
 const waits = [Duration.minutes(10), Duration.hours(1)];
+const firstLink = (content: string) =>
+  linkFromPost({ id: "1", type: 0, content, author: { id: "other" } }, "bot");
 
 it("takes the first Discord-style URL only from qualifying Link Posts", () => {
   const post = {
@@ -208,6 +210,4 @@ it("caps new channels at Horizon and includes exact boundaries", () => {
   expect(normalLowerBound(at(95), at(100), Duration.minutes(10))).toBe(
     DateTime.toEpochMillis(at(95)),
   );
-  expect(withinWindow(at(10), DateTime.toEpochMillis(at(10)))).toBe(true);
-  expect(withinWindow(at(9), DateTime.toEpochMillis(at(10)))).toBe(false);
 });

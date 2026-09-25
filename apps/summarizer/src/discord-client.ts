@@ -98,7 +98,7 @@ export interface DiscordApi {
 export class Discord extends Context.Service<Discord, DiscordApi>()("Discord") {}
 
 /** One serialized HTTP lane preserves the bucket and global deadlines under concurrent Runs. */
-export const makeDiscord = (
+const makeDiscord = (
   token: Redacted.Redacted,
 ): Effect.Effect<DiscordApi, never, HttpClient.HttpClient> =>
   Effect.gen(function* () {

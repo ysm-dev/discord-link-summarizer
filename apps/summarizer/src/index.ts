@@ -1,5 +1,15 @@
-import { BunRuntime, BunServices } from "@effect/platform-bun";
+import { BunHttpClient, BunRuntime, BunServices } from "@effect/platform-bun";
+import { homedir } from "node:os";
 import { Effect } from "effect";
-import { main } from "./main.ts";
+import { invoke } from "./invocation.ts";
 
-BunRuntime.runMain(main.pipe(Effect.provide(BunServices.layer)));
+BunRuntime.runMain(
+  invoke(process.argv.slice(2), process.env, homedir()).pipe(
+    Effect.flatMap((code) =>
+      Effect.sync(() => {
+        process.exitCode = code;
+      }),
+    ),
+    Effect.provide([BunServices.layer, BunHttpClient.layer]),
+  ),
+);

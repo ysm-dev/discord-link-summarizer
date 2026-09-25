@@ -17,6 +17,10 @@ export const DiscordChannel = () =>
     id: Schema.String,
     type: Schema.Finite,
     guild_id: Schema.optional(Schema.String),
+    parent_id: Schema.optional(Schema.String),
+    owner_id: Schema.optional(Schema.String),
+    name: Schema.optional(Schema.String),
+    thread_metadata: Schema.optional(Schema.Struct({ archived: Schema.Boolean })),
   });
 export const DiscordMessage = () =>
   Schema.Struct({
@@ -26,6 +30,7 @@ export const DiscordMessage = () =>
     content: Schema.String,
     type: Schema.Finite,
     timestamp: Schema.String,
+    edited_timestamp: Schema.optional(Schema.NullOr(Schema.String)),
     thread: Schema.optional(DiscordThread()),
   });
 export const ActiveThreads = () => Schema.Struct({ threads: Schema.Array(DiscordThread()) });

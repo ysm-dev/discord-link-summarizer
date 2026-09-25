@@ -89,20 +89,13 @@ export const scanPages = (
     return journal;
   });
 
-/** Includes archived In-progress threads across every archive-timestamp page, even before raised Since. */
-export const adoptInProgress = (api: DiscordApi, botId: string, journal: Journal, guild: string) =>
+const journalThreads = (
+  api: DiscordApi,
+  botId: string,
+  journal: Journal,
+  threads: readonly { id: string; owner_id: string; name: string }[],
+) =>
   Effect.gen(function* () {
-    const threads = (yield* api.listActiveThreads(guild)).filter(
-      (t) => t.parent_id === journal.record.channel,
-    );
-    let before: string | undefined;
-    for (;;) {
-      const page = yield* api.listArchivedThreads(journal.record.channel, before);
-      threads.push(...page.threads);
-      if (!page.has_more) break;
-      before = page.threads.at(-1)?.thread_metadata.archive_timestamp;
-      if (!before) return yield* fail("Archived thread pagination lacks a cursor");
-    }
     let result = journal;
     for (const thread of threads)
       if (
@@ -114,8 +107,44 @@ export const adoptInProgress = (api: DiscordApi, botId: string, journal: Journal
     return result;
   });
 
+/** Journal each archive page before advancing its persistent cursor. */
+export const adoptInProgress = (
+  api: DiscordApi,
+  stateId: string,
+  botId: string,
+  journal: Journal,
+  guild: string,
+  budget: number,
+) =>
+  Effect.gen(function* () {
+    const active = (yield* api.listActiveThreads(guild)).filter(
+      (t) => t.parent_id === journal.record.channel,
+    );
+    let result = yield* journalThreads(api, botId, journal, active);
+    let before = journal.record.archiveBefore ?? undefined;
+    for (;;) {
+      const page = yield* api.listArchivedThreads(journal.record.channel, before);
+      result = yield* journalThreads(api, botId, result, page.threads);
+      if (!page.has_more) {
+        if (before !== undefined)
+          result = yield* updateRecord(api, stateId, result, {
+            ...result.record,
+            archiveBefore: null,
+          });
+        return result;
+      }
+      before = page.threads.at(-1)?.thread_metadata.archive_timestamp;
+      if (!before) return yield* fail("Archived thread pagination lacks a cursor");
+      result = yield* updateRecord(api, stateId, result, {
+        ...result.record,
+        archiveBefore: before,
+      });
+      if ((yield* Clock.currentTimeMillis) >= budget) return result;
+    }
+  });
+
 export const dueJournalIds = (journals: readonly Journal[]) =>
-  journals.some((j) => j.record.phase === "scan")
+  journals.some((j) => j.record.phase === "scan" || Boolean(j.record.archiveBefore))
     ? []
     : journals
         .flatMap((j) =>
@@ -129,17 +158,52 @@ export const dueJournalIds = (journals: readonly Journal[]) =>
 export const settleRecord = (api: DiscordApi, stateId: string, journal: Journal) =>
   Effect.gen(function* () {
     if (
-      journal.record.phase !== "work" ||
+      journal.record.phase === "scan" ||
+      (journal.record.phase === "idle" &&
+        (journal.record.checkpoint !== undefined || !journal.entries.size)) ||
       [...journal.entries].some(([, status]) => status?.state !== "terminal")
     )
       return journal;
-    return yield* updateRecord(api, stateId, journal, {
-      ...journal.record,
-      floor: journal.record.high!,
-      high: null,
-      before: null,
-      phase: "idle",
+    const settled =
+      journal.record.phase === "work"
+        ? yield* updateRecord(api, stateId, journal, {
+            ...journal.record,
+            floor: journal.record.high!,
+            high: null,
+            before: null,
+            phase: "idle",
+          })
+        : journal;
+    const content = "DLS1 checkpoint {}";
+    const entries = () =>
+      api
+        .listThreadMessages(journal.parent)
+        .pipe(
+          Effect.map((messages) =>
+            messages.filter(
+              (message) =>
+                message.content === content &&
+                (settled.record.checkpoint === undefined ||
+                  BigInt(message.id) > BigInt(settled.record.checkpoint)),
+            ),
+          ),
+        );
+    if (!(yield* entries()).length) yield* Effect.exit(api.createMessage(journal.parent, content));
+    const markers = yield* entries();
+    if (markers.length !== 1) return yield* fail("Unreconciled Channel Record checkpoint");
+    return yield* updateRecord(api, stateId, settled, {
+      ...settled.record,
+      checkpoint: markers[0]!.id,
     });
+  });
+
+/** The parent checkpoint is durable before deletion. A later Run resumes bounded garbage collection. */
+export const pruneJournal = (api: DiscordApi, botId: string, journal: Journal) =>
+  Effect.gen(function* () {
+    if (!journal.record.checkpoint) return;
+    const old = yield* api.listThreadMessages(journal.parent, journal.record.checkpoint);
+    for (const message of old.filter((item) => item.author.id === botId).slice(0, 50))
+      yield* api.deleteMessage(journal.parent, message.id);
   });
 
 /** Rescan recent history for deleted bot-owned threads, preserving unresolved journal entries. */

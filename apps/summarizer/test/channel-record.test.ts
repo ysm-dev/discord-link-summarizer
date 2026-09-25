@@ -15,14 +15,12 @@ import {
   journalStatus,
   openChannelRecord,
   readJournal,
-  readyDigest,
-  readyManifest,
-  verifyReady,
   type Journal,
 } from "../src/channel-record.ts";
 import {
   horizon,
   hundredLinks,
+  journaledLink,
   loseJournalReply,
   now,
   open,
@@ -31,6 +29,8 @@ import {
   since,
   twoLinks,
 } from "./channel-record-fixture.ts";
+import { readyDigest, readyManifest } from "./ready-fixture.ts";
+import { verifyReady } from "../src/ready.ts";
 
 const batchKeyAt = (ids: readonly string[], length: number) =>
   "x".repeat(length - `DLS1 batch ${JSON.stringify({ key: ":0", ids })}`.length);
@@ -47,7 +47,10 @@ it.effect(
       const first = (yield* open(api)).journal!;
       expect(first.record.phase).toBe("idle");
       expect(first.record.floor).toBe(first.record.onboarding);
+      expect(fake.threads.get(first.parent)?.name).toBe("DLS1 10");
+      const edits = fake.requests.filter((r) => r.method === "PATCH").length;
       expect((yield* open(api)).journal).toEqual(first);
+      expect(fake.requests.filter((r) => r.method === "PATCH")).toHaveLength(edits);
       expect((yield* indexRecords(api, "20", "bot")).size).toBe(1);
       fake.threads.delete(first.parent);
       expect(yield* Effect.flip(open(api))).toMatchObject({ _tag: "RecordError" });
@@ -158,7 +161,7 @@ it.effect("adopts archived In-progress work before raised Since across archive p
       const source = fake.addMessage("10", "https://other.test", now - i);
       fake.addThread("10", source.id, "Other", "human", true, now - i);
     }
-    const adopted = yield* adoptInProgress(api, "bot", journal, "guild");
+    const adopted = yield* adoptInProgress(api, "20", "bot", journal, "guild", Infinity);
     expect(dueJournalIds([adopted])).toEqual([{ channel: "10", id: old.id }]);
     expect((yield* open(api)).journal?.entries.has(old.id)).toBe(true);
   }),
@@ -250,6 +253,31 @@ it.effect(
 );
 
 it.effect(
+  "repeats a terminal status after a durable pending reset instead of deduping ancient content",
+  () =>
+    Effect.gen(function* () {
+      const { fake, api } = yield* prepare;
+      const { source, journal: first } = yield* journaledLink(fake, api, now - 100);
+      let journal = yield* journalStatus(api, "20", "bot", first, {
+        id: source.id,
+        state: "terminal",
+      });
+      journal = yield* journalStatus(api, "20", "bot", journal, {
+        id: source.id,
+        state: "pending",
+      });
+      journal = yield* journalStatus(api, "20", "bot", journal, {
+        id: source.id,
+        state: "terminal",
+      });
+      expect((yield* open(api)).journal?.entries.get(source.id)?.state).toBe("terminal");
+      expect(
+        fake.messages.get(journal.parent)?.filter((m) => m.content.includes('"state":"terminal"')),
+      ).toHaveLength(2);
+    }),
+);
+
+it.effect(
   "lost onboarding replies reconcile; missing parent or child writes never silently initialize",
   () =>
     Effect.gen(function* () {
@@ -262,6 +290,13 @@ it.effect(
       expect((yield* Effect.flip(open(missingApi))).message).toContain("Ambiguous");
       const { fake: orphan, api: orphanApi } = yield* prepare;
       orphan.faults.push({ method: "POST", path: "/channels/20/messages/", drop: true });
+      expect((yield* Effect.flip(open(orphanApi))).message).toContain(
+        "Missing Channel Record journal",
+      );
+      expect((yield* open(orphanApi)).journal?.record.phase).toBe("idle");
+      const parent = orphan.messages.get("20")![0]!;
+      orphan.threads.delete(parent.id);
+      orphan.messages.set("20", [{ ...parent, thread: undefined }]);
       expect((yield* Effect.flip(open(orphanApi))).message).toContain(
         "Missing Channel Record journal",
       );

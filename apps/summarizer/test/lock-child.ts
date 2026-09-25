@@ -7,6 +7,6 @@ await Effect.runPromise(
       process.stdout.write("HELD\n");
       return yield* Effect.never;
     }),
-    process.argv[2],
+    process.argv[2]!,
   ),
 );

@@ -13,10 +13,7 @@ import {
   journalPage,
   journalStatus,
   persistReady,
-  readyDigest,
-  readyManifest,
   updateRecord,
-  verifyReady,
   type Journal,
 } from "../src/channel-record.ts";
 import {
@@ -30,6 +27,8 @@ import {
   settledDone,
   since,
 } from "./channel-record-fixture.ts";
+import { readyDigest, readyManifest } from "./ready-fixture.ts";
+import { verifyReady } from "../src/ready.ts";
 
 it.effect(
   "READY and terminal markers reject malformed transitions and reconcile lost replies",
@@ -112,7 +111,7 @@ it.effect("empty scans, recent backfill and archived active work preserve histor
     expect(journal.record.floor).toBe(journal.record.onboarding);
     const work = fake.addMessage("10", "https://old.test", now - 9 * 86400000);
     fake.addThread("10", work.id, "⏳ Active", "bot", false);
-    const adopted = yield* adoptInProgress(api, "bot", journal, "guild");
+    const adopted = yield* adoptInProgress(api, "20", "bot", journal, "guild", Infinity);
     expect(dueJournalIds([adopted]).map((item) => item.id)).toEqual([work.id]);
     expect((yield* settleRecord(api, "20", adopted)).record.phase).toBe("idle");
   }),
@@ -280,9 +279,9 @@ it.effect("full recent and archive pagination fails closed on a missing continua
       status: 200,
       body: { threads: archived, has_more: true },
     });
-    expect((yield* Effect.flip(adoptInProgress(api, "bot", journal, "guild"))).message).toContain(
-      "pagination lacks a cursor",
-    );
+    expect(
+      (yield* Effect.flip(adoptInProgress(api, "20", "bot", journal, "guild", Infinity))).message,
+    ).toContain("pagination lacks a cursor");
     expect(
       dueJournalIds([
         journal,
@@ -456,14 +455,16 @@ it.effect(
       fake.addThread("10", pending.id, "⏳ Pending", "bot");
       const other = fake.addMessage("20", "https://other.test", now - 50);
       fake.addThread("20", other.id, "⏳ Other", "bot");
-      const adopted = yield* adoptInProgress(api, "bot", journal, "guild");
+      const adopted = yield* adoptInProgress(api, "20", "bot", journal, "guild", Infinity);
       expect([...adopted.entries.keys()]).toEqual([pending.id]);
       expect(
         fake.messages
           .get(journal.parent)
           ?.some((m) => m.content.includes(`"key":"adopt/${pending.id}:0"`)),
       ).toBe(true);
-      expect((yield* adoptInProgress(api, "bot", adopted, "guild")).entries.size).toBe(1);
+      expect(
+        (yield* adoptInProgress(api, "20", "bot", adopted, "guild", Infinity)).entries.size,
+      ).toBe(1);
       expect(
         dueJournalIds([adopted, { ...adopted, record: { ...adopted.record, phase: "scan" } }]),
       ).toEqual([]);
