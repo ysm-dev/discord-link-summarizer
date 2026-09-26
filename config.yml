@@ -27,3 +27,6 @@ channels:
   - id: "1547454315935834143"
     label: en_reddit-deepseek
     since: "2026-09-25T23:00:11+09:00"
+  - id: "1553398870736633856"
+    label: queue
+    since: "2026-09-26T23:23:45+09:00"
