@@ -186,11 +186,11 @@ it.effect("a late post beyond the snapshot waits for the next scan", () =>
       listMessages: (channel: string, before?: string) =>
         api.listMessages(channel, before).pipe(Effect.map((page) => [late, ...page])),
     };
-    expect([...(yield* scanPages(inconsistent, "bot", journal, 1)).entries.keys()]).toEqual([
-      old.id,
-    ]);
-    const completed = yield* updateRecord(yield* open(), { ...journal.record, phase: "work" });
-    expect(yield* beginScan(api, completed)).toEqual(completed);
+    const completed = yield* scanPages(inconsistent, "bot", journal, 1);
+    expect([...completed.entries.keys()]).toEqual([old.id]);
     expect(yield* scanPages(api, "bot", completed, 1)).toEqual(completed);
+    const next = yield* beginScan(api, completed);
+    expect(next.record.scanFloor).toBe(old.id);
+    expect([...(yield* scanPages(api, "bot", next, 1)).entries.keys()]).toEqual([old.id, late.id]);
   }),
 );

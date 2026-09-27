@@ -1,7 +1,7 @@
 import { expect, it } from "./progress-fixture.ts";
 import { Effect } from "effect";
 import type { HttpClient } from "effect/unstable/http";
-import { persistReady } from "../src/channel-record.ts";
+import { persistReady, readJournal } from "../src/channel-record.ts";
 import { decodeConfig } from "../src/config.ts";
 import { DiscordFailure } from "../src/discord-client.ts";
 import { fakeApi } from "./discord-api-fixture.ts";
@@ -391,7 +391,7 @@ it.effect("does not reverse a terminal commit when its source disappears during 
     };
     const settings = yield* decodeConfig(config, "/home/test");
     const finished = yield* stalledWork(api, settings, journal, post.id);
-    expect(finished.entries.get(post.id)?.state).toBe("terminal");
+    expect(finished.journal.entries.get(post.id)?.state).toBe("terminal");
     expect(discord.messages.get(post.id)?.map((m) => m.content)).toEqual(["Finished"]);
   }),
 );
@@ -426,6 +426,7 @@ it.effect("gives up an orphaned maximum-length Attempt history without another s
     expect(yield* invoke()).toBe(0);
     expect(discord.threads.get(post.id)?.name).toBe("⚠️ Title");
     expect(discord.messages.get(post.id)).toHaveLength(3);
+    expect((yield* readJournal("10"))?.entries.size).toBe(0);
     expect(openCode.requests.filter((request) => request === "POST /api/session")).toHaveLength(0);
   }),
 );

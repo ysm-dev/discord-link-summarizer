@@ -22,6 +22,7 @@ const recordSchema = Schema.Struct({
   since: canonicalSince,
   high: Schema.NullOr(snowflake),
   before: Schema.NullOr(snowflake),
+  scanFloor: Schema.optionalKey(snowflake),
   phase: Schema.Literals(["idle", "scan", "work"]),
   archiveBefore: Schema.optionalKey(Schema.NullOr(Schema.String)),
   archiveComplete: Schema.optionalKey(Schema.Boolean),
@@ -36,7 +37,11 @@ const recordSchema = Schema.Struct({
       : record.high !== null && record.before !== null) &&
     (record.recentBefore === undefined) === (record.recentFloor === undefined) &&
     (record.recentBefore === undefined) === (record.recentSince === undefined) &&
-    (record.recentReset === null || record.recentBefore !== undefined)
+    (record.recentReset === null || record.recentBefore !== undefined) &&
+    (record.scanFloor === undefined ||
+      (record.phase === "scan" &&
+        BigInt(record.scanFloor) >= BigInt(record.floor) &&
+        BigInt(record.scanFloor) < BigInt(record.high!)))
       ? undefined
       : "Invalid record phase/cursors",
   ),

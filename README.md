@@ -58,7 +58,18 @@ From the installed checkout, load that file with Bun. Clear inherited values fir
 ```sh
 env -u DISCORD_BOT_TOKEN -u OPENCODE_DB bun --env-file="$HOME/.config/discord-link-summarizer/.env" apps/summarizer/src/index.ts --config ./config.yml --dry-run
 env -u DISCORD_BOT_TOKEN -u OPENCODE_DB bun --env-file="$HOME/.config/discord-link-summarizer/.env" apps/summarizer/src/index.ts --config ./config.yml
+env -u DISCORD_BOT_TOKEN -u OPENCODE_DB bun --env-file="$HOME/.config/discord-link-summarizer/.env" apps/summarizer/src/index.ts --config ./config.yml --watch
 ```
+
+The second command performs one discovery/work pass. `--watch` keeps the Run alive,
+checking each readable Watched Channel for new messages every five seconds after
+startup recovery. It reuses one private OpenCode server and fills available worker
+slots as Attempts finish. Waiting retries do not block discovery of newer posts.
+The interval is a delay between completed discovery cycles; rate limits, network
+latency and backlog can extend pickup time. Full Horizon rescans, archived-thread
+adoption and deferred transcript sweeps happen at the start of each Run, not every
+five seconds. Deleted completed threads are therefore rediscovered on a later Run.
+`--watch` cannot be combined with `--dry-run`.
 
 The default config path without `--config` is `~/.config/discord-link-summarizer/config.yml`. Dry run reads local Channel Records and reports each channel's effective start, partial discovery, and Pending/In-progress/Given-up counts without progress/Discord writes or OpenCode startup. If the progress database is absent, dry-run leaves it absent. Inspect results for one test channel before adding more. The second command performs a real Run and creates the private database automatically. Run manual and scheduled invocations as the same Unix user so they share progress and the lock. The approved single-machine lock uses Bun's retained descriptor with macOS `lockf -t 0 3` on one stable private lock file, including manual and dry Runs; `overlap_policy = "skip"` protects only ticks of the **same local crnd job**. Do not replace/unlink the lock file or run a second machine; see the recovery protocol.
 
@@ -90,7 +101,15 @@ The checked-in `crnd-job.toml` is a **paused fragment**, not a complete export. 
 
    Run `crnd import -f /private/path/merged-jobs.toml` **only on this complete file**, then check `crnd list`, `crnd show -n wachi-check` and `crnd show -n discord-link-summarizer`. If anything differs unexpectedly, restore with `crnd import -f /private/path/jobs.toml` and investigate. `crnd import -f crnd-job.toml` would delete wachi.
 
-4. Once the agent, private login and terminal-session publication, OS lock, Channel Records, Run behavior and test channel are verified, enable with `crnd resume -n discord-link-summarizer`. Inspect `crnd runs -n discord-link-summarizer` and `crnd logs -n discord-link-summarizer --show` for failures; pause with `crnd pause -n discord-link-summarizer` before troubleshooting. The one-minute schedule skips overlapping ticks; the 35-minute crnd timeout is only a backstop for the Run's own deadline.
+4. Once the agent, private login and terminal-session publication, OS lock, Channel Records, Run behavior and test channel are verified, enable with `crnd resume -n discord-link-summarizer`. Inspect `crnd runs -n discord-link-summarizer` and `crnd logs -n discord-link-summarizer --show` for failures; pause with `crnd pause -n discord-link-summarizer` before troubleshooting. The fragment includes `--watch`; existing jobs need that argument added to their command to enable five-second polling. The one-minute schedule skips overlapping ticks; the 35-minute crnd timeout is only a backstop for the Run's own deadline.
+
+In watch mode, the default 20-minute Run budget stops polling and admission of new
+Attempts; active Attempts drain under their existing timeouts. The next crnd tick
+starts a fresh Run and reloads configuration. Pickup can pause during this drain
+and for up to a minute afterward. Infrastructure errors end the Run and interrupt
+active Attempts; crnd supplies the next retry rather than a five-second outage
+retry loop. To perform a manual or dry Run, pause the job and wait for its current
+Run to finish, since watch mode retains the same machine lock for its lifetime.
 
 After machine loss, clone this repo and translate; restore/provision Bun, crnd, wachi's job and the dedicated bot token. Restore `~/.local/state/discord-link-summarizer/progress.sqlite` from a consistent SQLite backup. Without a backup, explicitly select a recovery Since and temporarily widen Horizon to cover the entire interval; the default seven days can miss an older backlog. Existing Summary Threads are reconciled during the rescan, but lost READY manifests may require regenerating unfinished drafts. See the [backup and recovery instructions](docs/recovery-protocol.md#backup-and-machine-loss-recovery).
 

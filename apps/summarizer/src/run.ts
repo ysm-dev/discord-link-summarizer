@@ -17,7 +17,6 @@ import {
   adoptInProgress,
   beginScan,
   discoveryComplete,
-  dueJournalIds,
   rewindRecent,
   scanPages,
 } from "./channel-discovery.ts";
@@ -33,7 +32,7 @@ import type { DiscordThread } from "./discord-schema.ts";
 import { linkFromPost, linkPostState } from "./link-post.ts";
 import { OpenCode } from "./opencode-client.ts";
 import { OpenCodeServer } from "./opencode-server.ts";
-import { workOn } from "./run-attempt.ts";
+import { runQueue } from "./run-queue.ts";
 import { SessionPublication } from "./session-publication.ts";
 import { ProgressStore } from "./progress-store.ts";
 import { normalLowerBound } from "./window.ts";
@@ -376,6 +375,7 @@ export const run = (
   token: Redacted.Redacted,
   database: string,
   environment: Readonly<Record<string, string>>,
+  watch: boolean,
   discoverService: typeof Service.discover = Service.discover,
 ) =>
   Effect.gen(function* () {
@@ -408,7 +408,6 @@ export const run = (
       "discovery",
       discover(api, identity.user.id, settings, valid, budget),
     );
-    const queue = dueJournalIds([...journals.values()]);
     const complete = discoveryComplete([...journals.values()]);
     if ((yield* Clock.currentTimeMillis) >= budget) return skipped ? 1 : 0;
     const serverLayer = OpenCodeServer.layer({
@@ -455,29 +454,7 @@ export const run = (
           ),
         ),
       );
-      const runID = crypto.randomUUID();
-      let admitted = queue.length === 0;
-      yield* Effect.forEach(
-        queue,
-        ({ id, channel: channelId }) =>
-          Effect.gen(function* () {
-            if ((yield* Clock.currentTimeMillis) >= budget) return void 0;
-            admitted = true;
-            const channel = valid.find((entry) => entry.channel.id === channelId)!.channel;
-            yield* workOn(
-              api,
-              client,
-              publication,
-              identity.user.id,
-              settings,
-              journals.get(channelId)!,
-              { id, channel },
-              runID,
-            );
-            return void 0;
-          }),
-        { concurrency: settings.concurrency },
-      );
+      const admitted = yield* runQueue(api, identity.user.id, settings, journals, budget, watch);
       yield* Fiber.join(publishing);
       for (const { channel } of valid) {
         const settled = yield* settleRecord(journals.get(channel.id)!);

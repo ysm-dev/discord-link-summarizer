@@ -38,6 +38,8 @@ A Channel Record preserves:
 - the effective Since last applied;
 - a settled history floor, separate from a discovery cursor;
 - a bounded scan epoch's upper message ID and next `before` cursor;
+- an optional `scanFloor` for the lower boundary of a new incremental scan,
+  distinct from the settled floor while earlier Attempts remain unresolved;
 - an optional recent-rescan `before` cursor, frozen lower-bound Snowflake and
   effective Since, plus the oldest deleted-thread reset candidate seen so far;
 - whether the epoch is being discovered or worked.
@@ -62,9 +64,15 @@ mistaking normalized entries for an empty queue.
 ## Discovery and ordering
 
 1. Snapshot an epoch's highest actual message ID, then scan newest-to-oldest,
-   at most 100 messages per request, down to its settled floor.
+   at most 100 messages per request. An initial scan starts at the settled floor.
+   A later scan can start above the previously fully discovered epoch's high ID
+   even while its Attempts wait for retry. Persist that boundary as `scanFloor`
+   before replacing the high ID, and retain all unresolved journal entries.
+   A legacy interrupted scan without `scanFloor` resumes from the settled floor.
 2. Commit every eligible ID in a page before checkpointing the next cursor.
    If interrupted between those commits, replay the page idempotently.
+   Completing discovery removes `scanFloor`; the high ID then represents the
+   fully discovered interval, independently of whether its Attempts are finished.
 3. Continue an unfinished scan in the next Run when the budget is exhausted.
    Do not start newer work while an undiscovered older interval could contain
    eligible Link Posts.
@@ -118,6 +126,21 @@ restart while another channel is still catching up. Completion markers are
 reset after all channels finish discovery and work admission occurs (or there is
 no work). Active threads are fetched once per guild per discovery pass. Historical
 discovery and unfinished archive adoption still block younger work globally.
+
+## Polling Runs
+
+With `--watch`, full recovery runs once at startup. Subsequent discovery cycles
+check for newer messages with a five-second delay between cycles, draining
+unfinished page ranges without that delay. They retain the machine lock, SQLite
+connection and private OpenCode server while bounded Attempts run concurrently.
+Recent-Horizon rescans, archived adoption and deferred transcript sweeps repeat
+on the next Run. Retry deadlines are cached only for the current Run; after a
+restart they are reconstructed from the durable Attempt notes. Infrastructure
+failures end the Run rather than retrying every five seconds.
+
+At the Run budget, polling and admission stop and active Attempts drain under
+their existing deadlines. The whole-Run timeout remains the final bound. crnd's
+next non-overlapping tick starts a new Run and reloads configuration.
 
 ## Publication handoff
 

@@ -1,7 +1,7 @@
 import { expect, it } from "./progress-fixture.ts";
 import { DateTime, Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
-import { journalPage, journalStatus } from "../src/channel-record.ts";
+import { journalPage, journalStatus, readJournal } from "../src/channel-record.ts";
 import { ProgressStore } from "../src/progress-store.ts";
 import { readyManifest } from "./ready-fixture.ts";
 import {
@@ -91,6 +91,7 @@ it.effect(
       expect(discord.messages).toEqual(messages);
       expect(discord.threads).toEqual(threads);
       expect(yield* invokeWith(advanced)).toBe(0);
+      expect((yield* readJournal("10"))?.entries.size).toBe(0);
       expect(discord.threads.get(pending.id)).toBeUndefined();
       for (const source of [started, ready, current])
         expect(discord.threads.get(source.id)?.thread_metadata.archived).toBe(true);

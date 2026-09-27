@@ -3,7 +3,7 @@ import { BunHttpClient, BunServices } from "@effect/platform-bun";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Effect } from "effect";
+import { Effect, Fiber } from "effect";
 import { Layer } from "effect";
 import { TestClock } from "effect/testing";
 import { HttpClient } from "effect/unstable/http";
@@ -11,7 +11,8 @@ import { decodeCli } from "../src/config.ts";
 import { invoke } from "../src/invocation.ts";
 import { MachineLockError, withMachineLock } from "../src/machine-lock.ts";
 import { FakeDiscord } from "./discord-fake.ts";
-import { captureLogs, config, setup } from "./run-fixture.ts";
+import { at, captureLogs, config, setup, waitFor } from "./run-fixture.ts";
+import { temporaryDirectory } from "./progress-fixture.ts";
 
 const skipped: typeof withMachineLock = () => Effect.succeed("already-running");
 const unlocked: typeof withMachineLock = (run) => run;
@@ -103,7 +104,6 @@ it.effect("returns the Run's successful exit code through an acquired lock", () 
     const dir = mkdtempSync(join(tmpdir(), "summarizer-run-invoke-"));
     const file = join(dir, "config.yml");
     const discord = new FakeDiscord();
-    const at = Date.parse("2026-09-25T12:00:00Z");
     yield* TestClock.setTime(at);
     const http = HttpClient.make((request, url) =>
       discord.client
@@ -130,5 +130,35 @@ it.effect("returns the Run's successful exit code through an acquired lock", () 
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  }).pipe(Effect.provide(BunServices.layer)),
+);
+
+it.effect("--watch drives repeated discovery through one locked invocation", () =>
+  Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const file = join(dir, "config.yml");
+    writeFileSync(file, config + "run_budget: 6 seconds\n");
+    const { discord, services, getStarted } = yield* setup();
+    const { logs, layer } = captureLogs();
+    let locks = 0;
+    const fiber = yield* Effect.forkChild(
+      invoke(
+        ["--config", file, "--watch"],
+        { DISCORD_BOT_TOKEN: "secret", OPENCODE_DB: "/db" },
+        dir,
+        (run) => {
+          locks++;
+          return run;
+        },
+      ).pipe(Effect.provide([services, layer])),
+    );
+    yield* waitFor(() => logs.some((line) => line.includes("Watching for new Link Posts")));
+    const source = discord.addMessage("10", "https://example.test/cli-watch", at + 1);
+    yield* TestClock.adjust("5 seconds");
+    yield* waitFor(() => discord.threads.get(source.id)?.thread_metadata.archived === true);
+    yield* TestClock.adjust("1 second");
+    expect(yield* Fiber.join(fiber)).toBe(0);
+    expect(locks).toBe(1);
+    expect(getStarted()).toBe(1);
   }).pipe(Effect.provide(BunServices.layer)),
 );

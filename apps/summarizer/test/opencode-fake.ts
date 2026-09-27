@@ -79,6 +79,9 @@ const hungCreation = (config: FakeOptions, method: string, path: string) =>
 class FakeServer {
   readonly requests: string[] = [];
   readonly bodies: string[] = [];
+  get sessionsCreated() {
+    return this.requests.filter((request) => request === "POST /api/session").length;
+  }
   private controller: ReadableStreamDefaultController<Uint8Array> | undefined;
   private readonly marked = new Map<string, Schema.JsonObject>();
   constructor(private readonly config: FakeOptions) {}

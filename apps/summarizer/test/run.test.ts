@@ -1,7 +1,7 @@
 import { expect, it } from "./progress-fixture.ts";
 import { Effect, Fiber, Schema } from "effect";
 import { TestClock } from "effect/testing";
-import { openChannelRecord, persistReady } from "../src/channel-record.ts";
+import { openChannelRecord, persistReady, readJournal } from "../src/channel-record.ts";
 import { ProgressStore } from "../src/progress-store.ts";
 import { decodeConfig } from "../src/config.ts";
 import { fakeApi } from "./discord-api-fixture.ts";
@@ -370,6 +370,7 @@ it.effect("skips a deleted source while completing another Link", () =>
     expect(yield* invoke()).toBe(0);
     expect(discord.threads.get(gone.id)).toBeUndefined();
     expect(discord.threads.get(kept.id)?.thread_metadata.archived).toBe(true);
+    expect((yield* readJournal("10"))?.entries.size).toBe(0);
     expect(openCode.requests.filter((request) => request === "POST /api/session")).toHaveLength(1);
   }),
 );

@@ -28,6 +28,7 @@ export const invoke = (
             (entry): entry is [string, string] => entry[1] !== undefined,
           ),
         ),
+        cli.watch,
       ).pipe(Effect.provide(ProgressStore.layer(settings.progressDatabase, cli.dryRun))),
       join(home, ".local/state/discord-link-summarizer/run.lock"),
     );

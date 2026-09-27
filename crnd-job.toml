@@ -12,6 +12,7 @@ command = [
   "/absolute/checkout/apps/summarizer/src/index.ts",
   "--config",
   "/absolute/checkout/config.yml",
+  "--watch",
 ]
 cwd = "/absolute/checkout"
 schedule = "* * * * *"
@@ -23,3 +24,5 @@ paused = true
 # Keep DISCORD_BOT_TOKEN and the isolated OPENCODE_DB in the private env file.
 # crnd v0.2.5 rejects TOML env tables because its parser attaches symbol metadata.
 # Unset inherited values first: Bun's env-file does not override process environment.
+# --watch polls incrementally every five seconds within the existing Run budget.
+# Overlapping minute ticks skip; a new Run follows after active Attempts drain.

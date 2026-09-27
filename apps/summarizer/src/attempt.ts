@@ -79,6 +79,7 @@ export type AttemptStatus = {
   readonly live: boolean;
   readonly due: boolean;
   readonly giveUp: boolean;
+  readonly retryAt: number;
 };
 
 /** A started note is stale at exactly timeout + 2 minutes. A crashed failure's time is its note's timestamp, not the time it was discovered. */
@@ -95,20 +96,25 @@ export const attemptStatus = (
       note.kind === "failed" ||
       (note.kind === "started" && nowMs - DateTime.toEpochMillis(at) >= staleAfter),
   );
-  const live = notes.some(
-    ({ note, at }) => note.kind === "started" && nowMs - DateTime.toEpochMillis(at) < staleAfter,
+  const liveUntil = Math.max(
+    ...notes
+      .filter(({ note }) => note.kind === "started")
+      .map(({ at }) => DateTime.toEpochMillis(at) + staleAfter),
   );
+  const live = nowMs < liveUntil;
   const maximum = retryWaits.length + 1;
   const giveUp = counted.length >= maximum;
   const latestFailureAt = Math.max(...counted.map(({ at }) => DateTime.toEpochMillis(at)));
+  const retryAt = live
+    ? liveUntil
+    : counted.length > 0 && !giveUp
+      ? latestFailureAt + Duration.toMillis(retryWaits[counted.length - 1]!)
+      : nowMs;
   return {
     counted: counted.length,
     live,
     giveUp,
-    due:
-      !live &&
-      !giveUp &&
-      (counted.length === 0 ||
-        nowMs >= latestFailureAt + Duration.toMillis(retryWaits[counted.length - 1]!)),
+    due: !giveUp && nowMs >= retryAt,
+    retryAt,
   };
 };

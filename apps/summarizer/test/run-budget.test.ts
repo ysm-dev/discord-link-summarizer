@@ -3,15 +3,9 @@ import { Clock, Effect, Fiber, Logger } from "effect";
 import { TestClock } from "effect/testing";
 import { decodeConfig } from "../src/config.ts";
 import { fakeApi } from "./discord-api-fixture.ts";
-import { at, config, seedJournal, setup, stalledWork } from "./run-fixture.ts";
+import { at, config, seedJournal, setup, stalledWork, waitFor } from "./run-fixture.ts";
 
 const shortBudget = config + "run_budget: 10 seconds\n";
-
-const waitFor = (predicate: () => boolean) =>
-  Effect.gen(function* () {
-    for (let index = 0; index < 200 && !predicate(); index++) yield* Effect.yieldNow;
-    expect(predicate()).toBe(true);
-  });
 
 it.effect("stops before claiming work when the discovery budget is spent", () =>
   Effect.gen(function* () {
@@ -331,7 +325,7 @@ for (const mode of ["timeout", "interrupt"] as const)
       ).toHaveLength(1);
       if (mode === "timeout") {
         yield* TestClock.adjust("10 minutes");
-        expect((yield* Fiber.join(fiber)).entries.get(post.id)).toBeUndefined();
+        expect((yield* Fiber.join(fiber)).journal.entries.get(post.id)).toBeUndefined();
         expect(discord.messages.get(post.id)?.[0]?.content).toContain("(timeout)");
       } else {
         yield* Fiber.interrupt(fiber);

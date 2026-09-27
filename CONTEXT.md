@@ -57,7 +57,7 @@ _Avoid_: digest, TL;DR (a TL;DR is one section of a Summary)
 ### Operation
 
 **Run**:
-One invocation of the Summarizer by the scheduler. It resumes unfinished work from durable progress and checks the current Link Posts and Summary Threads.
+One invocation of the Summarizer by the scheduler. It resumes unfinished work from durable progress and checks the current Link Posts and Summary Threads. It may discover newly arriving Link Posts while earlier Attempts are still running or waiting for retry.
 _Avoid_: job (the crnd schedule entry), check (wachi's word), tick
 
 **Horizon**:

@@ -72,14 +72,14 @@ export const setup = (
       Layer.succeed(HttpClient.HttpClient, http),
       Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
     );
-    const invoke = (dryRun = false) =>
-      run(settings, dryRun, Redacted.make("secret"), "/db", {}, discoverService).pipe(
+    const invoke = (dryRun = false, watch = false) =>
+      run(settings, dryRun, Redacted.make("secret"), "/db", {}, watch, discoverService).pipe(
         Effect.provide(services),
       );
     const invokeWith = (text: string, dryRun = false) =>
       decodeConfig(text, "/home/test").pipe(
         Effect.flatMap((changed) =>
-          run(changed, dryRun, Redacted.make("secret"), "/db", {}, discoverService),
+          run(changed, dryRun, Redacted.make("secret"), "/db", {}, false, discoverService),
         ),
         Effect.provide(services),
       );
@@ -125,6 +125,13 @@ export const waitForFault = (discord: FakeDiscord, remaining = 0) =>
     for (let turn = 0; turn < 200 && discord.faults.length !== remaining; turn++)
       yield* Effect.yieldNow;
     if (discord.faults.length !== remaining) return yield* Effect.die("Discord fault not reached");
+    return void 0;
+  });
+
+export const waitFor = (predicate: () => boolean) =>
+  Effect.gen(function* () {
+    for (let turn = 0; turn < 200 && !predicate(); turn++) yield* Effect.yieldNow;
+    if (!predicate()) return yield* Effect.die("Expected progress was not reached");
     return void 0;
   });
 

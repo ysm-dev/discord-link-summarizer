@@ -70,6 +70,7 @@ export interface Environment {
 export interface CliOptions {
   readonly configPath: string;
   readonly dryRun: boolean;
+  readonly watch: boolean;
 }
 
 const environmentSchema = Schema.Struct({ DISCORD_BOT_TOKEN: nonEmpty, OPENCODE_DB: nonEmpty });
@@ -142,16 +143,20 @@ export const decodeCli = (input: unknown, home: string): Effect.Effect<CliOption
     );
     let configPath = `${home}/.config/discord-link-summarizer/config.yml`;
     let dryRun = false;
+    let watch = false;
     let hasConfig = false;
     for (let index = 0; index < args.length; index++) {
       const arg = args[index];
       const value = args[index + 1];
       if (arg === "--dry-run" && !dryRun) dryRun = true;
+      else if (arg === "--watch" && !watch) watch = true;
       else if (arg === "--config" && !hasConfig && value && !value.startsWith("--")) {
         configPath = expandHome(value, home);
         index++;
         hasConfig = true;
       } else return yield* new ConfigError({ message: `Invalid CLI argument: ${arg}` });
     }
-    return { configPath, dryRun };
+    if (dryRun && watch)
+      return yield* new ConfigError({ message: "--watch cannot be combined with --dry-run" });
+    return { configPath, dryRun, watch };
   });

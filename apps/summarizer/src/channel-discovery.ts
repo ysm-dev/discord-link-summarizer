@@ -16,14 +16,16 @@ import {
 /** Snapshot an actual message ID; a channel's last_message_id may point at a deletion. */
 export const beginScan = (api: DiscordApi, journal: Journal) =>
   Effect.gen(function* () {
-    if (journal.record.phase !== "idle") return journal;
+    if (journal.record.phase === "scan") return journal;
+    const floor = journal.record.high ?? journal.record.floor;
     const highest = (yield* api.listMessages(journal.record.channel))[0]?.id;
-    if (!highest || BigInt(highest) <= BigInt(journal.record.floor)) return journal;
+    if (!highest || BigInt(highest) <= BigInt(floor)) return journal;
     return yield* updateRecord(journal, {
       ...journal.record,
       phase: "scan",
       high: highest,
       before: (BigInt(highest) + 1n).toString(),
+      scanFloor: floor,
     });
   });
 
@@ -33,7 +35,7 @@ export const scanPages = (api: DiscordApi, botId: string, initial: Journal, maxP
     let journal = initial;
     for (let count = 0; count < maxPages && journal.record.phase === "scan"; count++) {
       const page = yield* api.listMessages(journal.record.channel, journal.record.before!);
-      const floor = BigInt(journal.record.floor);
+      const floor = BigInt(journal.record.scanFloor ?? journal.record.floor);
       const eligible = page.filter(
         (m) =>
           BigInt(m.id) > floor &&
@@ -46,8 +48,10 @@ export const scanPages = (api: DiscordApi, botId: string, initial: Journal, maxP
         eligible.map((m) => m.id),
       );
       const finished = page.length < 100 || BigInt(low!) <= floor;
+      const record = { ...journal.record };
+      if (finished) delete record.scanFloor;
       journal = yield* updateRecord(journal, {
-        ...journal.record,
+        ...record,
         phase: finished ? "work" : "scan",
         before: low ?? journal.record.before,
       });
@@ -212,6 +216,7 @@ const completeRecent = (
       high: null,
       before: null,
     };
+    delete next.scanFloor;
     return yield* updateRecord(journal, next);
   });
 

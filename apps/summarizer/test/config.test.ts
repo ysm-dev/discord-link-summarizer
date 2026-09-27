@@ -160,22 +160,36 @@ it.effect("decodes strict CLI options and expands home only at the start", () =>
     expect(yield* decodeCli([], "/home/me")).toEqual({
       configPath: "/home/me/.config/discord-link-summarizer/config.yml",
       dryRun: false,
+      watch: false,
     });
     expect(yield* decodeCli(["--dry-run", "--config", "~/settings.yml"], "/home/me")).toEqual({
       configPath: "/home/me/settings.yml",
       dryRun: true,
+      watch: false,
     });
     expect(yield* decodeCli(["--config", "~"], "/home/me")).toEqual({
       configPath: "/home/me",
       dryRun: false,
+      watch: false,
     });
     expect(yield* decodeCli(["--config", "/tmp/~literal"], "/home/me")).toEqual({
       configPath: "/tmp/~literal",
       dryRun: false,
+      watch: false,
     });
+    expect(yield* decodeCli(["--watch"], "/home/me")).toEqual({
+      configPath: "/home/me/.config/discord-link-summarizer/config.yml",
+      dryRun: false,
+      watch: true,
+    });
+    expect((yield* Effect.flip(decodeCli(["--dry-run", "--watch"], "/home/me"))).message).toBe(
+      "--watch cannot be combined with --dry-run",
+    );
     for (const args of [
       ["--wat"],
       ["--dry-run", "--dry-run"],
+      ["--watch", "--watch"],
+      ["--watch", "--dry-run"],
       ["--config"],
       ["--config", ""],
       ["--config", "--dry-run"],

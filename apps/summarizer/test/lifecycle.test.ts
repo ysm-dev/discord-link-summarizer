@@ -147,12 +147,14 @@ it("uses exact stale/retry boundaries and the failure note's timestamp", () => {
     live: false,
     due: true,
     giveUp: false,
+    retryAt: DateTime.toEpochMillis(at(0)),
   });
   expect(attemptStatus([note(started, 0)], at(11), Duration.minutes(10), waits)).toEqual({
     counted: 0,
     live: true,
     due: false,
     giveUp: false,
+    retryAt: DateTime.toEpochMillis(at(12)),
   });
   // At exactly 12 minutes the started note is stale; its retry is due from minute 0 + 10, already past.
   expect(attemptStatus([note(started, 0)], at(12), Duration.minutes(10), waits)).toEqual({
@@ -160,12 +162,14 @@ it("uses exact stale/retry boundaries and the failure note's timestamp", () => {
     live: false,
     due: true,
     giveUp: false,
+    retryAt: DateTime.toEpochMillis(at(10)),
   });
   expect(attemptStatus([note(interrupted, 0)], at(100), Duration.minutes(10), waits)).toEqual({
     counted: 0,
     live: false,
     due: true,
     giveUp: false,
+    retryAt: DateTime.toEpochMillis(at(100)),
   });
   expect(attemptStatus([note(interrupted, 0)], at(1), Duration.minutes(10), waits).live).toBe(
     false,
@@ -199,7 +203,13 @@ it("uses exact stale/retry boundaries and the failure note's timestamp", () => {
       Duration.minutes(10),
       waits,
     ),
-  ).toEqual({ counted: 3, live: false, due: false, giveUp: true });
+  ).toEqual({
+    counted: 3,
+    live: false,
+    due: false,
+    giveUp: true,
+    retryAt: DateTime.toEpochMillis(at(81)),
+  });
   expect(
     attemptStatus([note(started, 11), note(failed, 5)], at(12), Duration.minutes(10), waits).live,
   ).toBe(true);
