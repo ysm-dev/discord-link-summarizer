@@ -70,6 +70,8 @@ it.effect("a changed Since takes effect only after its budget-limited rescan com
     const current = discord.addMessage("10", "https://example.test/current", at - day);
     expect(yield* invokeWith(recent)).toBe(0);
     expect(discord.threads.get(old.id)).toBeUndefined();
+    // Exercise reconciliation when the optional thread field is absent.
+    discord.messages.set("10", [old, current]);
     discord.faults.push({ method: "GET", path: `/channels/${current.id}`, pause: 16 * 60_000 });
     const fiber = yield* Effect.forkChild(invokeWith(backfill));
     yield* waitForFault(discord);
@@ -102,6 +104,7 @@ it.effect("a completed rescan revisits newer deletions after its cursor is clear
     const older = discord.addMessage("10", "https://example.test/older", at - 3 * day);
     const newer = discord.addMessage("10", "https://example.test/newer", at - 2 * day);
     expect(yield* invoke()).toBe(0);
+    discord.messages.set("10", [older, newer]);
     discord.faults.push({ method: "GET", path: `/channels/${newer.id}`, pause: 10 * 60_000 });
     const partial = yield* Effect.forkChild(invoke());
     yield* waitForFault(discord);

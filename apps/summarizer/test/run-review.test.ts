@@ -36,6 +36,8 @@ it.effect(
         discord.addMessage("10", "https://example.test/two", at - 2 * day),
       ].toReversed();
       for (const source of remaining) {
+        // Omitted optional thread fields keep the fallback lookup time-sliced after completion.
+        discord.messages.set("10", [done, pending, ...remaining]);
         discord.faults.push({ method: "GET", path: `/channels/${source.id}`, pause: 11 * 60_000 });
         const fiber = yield* Effect.forkChild(invoke());
         yield* waitForFault(discord);
@@ -147,6 +149,7 @@ it.effect("a multi-Run backfill discovers the frozen Horizon tail after time pas
     const newer = discord.addMessage("10", "https://example.test/new", at - day);
     expect(yield* invokeWith(recent)).toBe(0);
     expect(discord.threads.get(tail.id)).toBeUndefined();
+    discord.messages.set("10", [tail, newer]);
     discord.faults.push({ method: "GET", path: `/channels/${newer.id}`, pause: 11 * 60_000 });
     const fiber = yield* Effect.forkChild(invokeWith(backfill));
     yield* waitForFault(discord);
@@ -204,22 +207,14 @@ it.effect("a slow rescan in one channel leaves time to recover a second channel"
     const second = discord.addMessage("11", "https://example.test/second", at - 5 * day);
     expect(yield* invoke()).toBe(0);
     discord.threads.delete(second.id);
+    discord.messages.set("10", first);
+    discord.requests.length = 0;
     for (const source of first)
       discord.faults.push({ method: "GET", path: `/channels/${source.id}`, pause: 4 * 60_000 });
     const fiber = yield* Effect.forkChild(invoke());
-    for (
-      let turn = 0;
-      turn < 200 && !discord.requests.some((r) => r.path === `/channels/${first[3]!.id}`);
-      turn++
-    )
-      yield* Effect.yieldNow;
+    yield* waitForFault(discord, 3);
     yield* TestClock.adjust("4 minutes");
-    for (
-      let turn = 0;
-      turn < 200 && !discord.requests.some((r) => r.path === `/channels/${first[2]!.id}`);
-      turn++
-    )
-      yield* Effect.yieldNow;
+    yield* waitForFault(discord, 2);
     yield* TestClock.adjust("4 minutes");
     expect(yield* Fiber.join(fiber)).toBe(0);
     expect(discord.threads.get(second.id)?.thread_metadata.archived).toBe(true);

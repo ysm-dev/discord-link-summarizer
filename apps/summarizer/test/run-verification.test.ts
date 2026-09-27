@@ -30,7 +30,7 @@ for (const givenUp of [false, true])
             true,
           );
           discord.addMessage(post.id, givenUp ? "⚠️ 요약 실패 (3/3): 실패" : "Summary", at, "bot");
-          for (const body of [thread, thread, { ...thread, ...invalid }])
+          for (const body of [thread, { ...thread, ...invalid }])
             discord.faults.push({
               method: "GET",
               path: `/channels/${post.id}`,
@@ -50,7 +50,7 @@ it.effect("a committed title with warning glyphs at the end is still Done", () =
     for (const suffix of ["⏳ ", "⚠️ "]) {
       const { discord, invoke, post, thread } = yield* seededThread("Title", true);
       discord.addMessage(post.id, "Summary", at, "bot");
-      for (const body of [thread, thread, { ...thread, name: `Title ${suffix}` }])
+      for (const body of [thread, { ...thread, name: `Title ${suffix}` }])
         discord.faults.push({
           method: "GET",
           path: `/channels/${post.id}`,
@@ -67,12 +67,6 @@ it.effect("a substituted or unreadable Summary Thread fails fresh admission", ()
   Effect.gen(function* () {
     for (const forbidden of [false, true]) {
       const { discord, invoke, post, thread } = yield* seededThread("⏳ Title");
-      discord.faults.push({
-        method: "GET",
-        path: `/channels/${post.id}`,
-        status: 200,
-        body: { ...thread, type: 11 },
-      });
       discord.faults.push(
         forbidden
           ? { method: "GET", path: `/channels/${post.id}`, status: 403 }

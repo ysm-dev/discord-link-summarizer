@@ -74,6 +74,10 @@ Recent-Horizon rescans detect deleted completed Summary Threads and deliberate
 Since backfills. Journal a reset before rewinding and restarting discovery;
 retain and deduplicate existing unresolved IDs. Moving Since forward may exclude
 new Pending work, but must not discard already-started In-progress work.
+When a history-page message includes its thread, the rescan uses that as evidence
+of existence, including archived threads. Only a missing optional thread field
+requires a direct channel lookup before declaring a deletion. Attempt admission
+still re-reads the source and thread to verify current state and ownership.
 Changing the Horizon must not jump an existing settled floor.
 Recent rescans snapshot the newest message and persist their cursor and any
 reset candidate after each complete page or when their share of the half-Run

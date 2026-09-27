@@ -218,8 +218,13 @@ export class FakeDiscord {
 
   private routeSingleMessage(id: string, messageId: string): { status: number; body?: object } {
     const item = this.messages.get(id)?.find((message) => message.id === messageId);
-    if (item) return { status: 200, body: item };
+    if (item) return { status: 200, body: this.withoutDeletedThread(item) };
     return { status: 404, body: { code: 10008 } };
+  }
+
+  private withoutDeletedThread(message: DiscordMessage): DiscordMessage {
+    // A deleted thread no longer appears in fresh Discord message responses.
+    return this.threads.has(message.id) ? message : { ...message, thread: undefined };
   }
 
   private routePostMessage(id: string, body: Schema.Json | undefined, now: number) {
@@ -246,7 +251,8 @@ export class FakeDiscord {
         body: list
           .filter((msg) => before === null || BigInt(msg.id) < BigInt(before))
           .toSorted((a, b) => (BigInt(a.id) > BigInt(b.id) ? -1 : 1))
-          .slice(0, Number(url.searchParams.get("limit") ?? 50)),
+          .slice(0, Number(url.searchParams.get("limit") ?? 50))
+          .map((message) => this.withoutDeletedThread(message)),
       };
     }
     if (parts[4] === "threads" && method === "POST")

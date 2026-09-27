@@ -120,7 +120,8 @@ export const dueJournalIds = (journals: readonly Journal[]) =>
 
 const deletedThread = (api: DiscordApi, botId: string, journal: Journal, source: DiscordMessage) =>
   Effect.gen(function* () {
-    if (!linkFromPost(source, botId)) return false;
+    // History pages include archived threads too; only an absent thread needs reconciliation.
+    if (!linkFromPost(source, botId) || source.thread) return false;
     const thread = yield* api.getChannel(source.id).pipe(
       Effect.catchIf(
         (error) => error.kind === "not-found",
