@@ -24,6 +24,7 @@ const recordSchema = Schema.Struct({
   before: Schema.NullOr(snowflake),
   phase: Schema.Literals(["idle", "scan", "work"]),
   archiveBefore: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  archiveComplete: Schema.optionalKey(Schema.Boolean),
   recentBefore: Schema.optionalKey(snowflake),
   recentFloor: Schema.optionalKey(snowflake),
   recentSince: Schema.optionalKey(canonicalSince),
@@ -92,21 +93,19 @@ const parse = (channel: string, data: string): Journal => {
     entries: new Map(stored.entries.map(({ id, status }) => [id, status ?? undefined])),
   };
 };
-const encode = (journal: Journal) =>
-  JSON.stringify({
-    record: journal.record,
-    entries: [...journal.entries].map(([id, status]) => ({ id, status: status ?? null })),
-  });
-const change = (channel: string, f: (journal: Journal | undefined) => Journal) =>
+const change = (
+  channel: string,
+  f: (journal: Journal | undefined) => Journal,
+  ids?: readonly string[],
+) =>
   Effect.gen(function* () {
     const store = yield* ProgressStore;
-    const text = yield* store.change(channel, (stored) => {
-      const result = f(stored === undefined ? undefined : parse(channel, stored));
-      const data = encode(result);
-      parse(channel, data);
-      return data;
+    return yield* store.editJournal(channel, parse, (stored) => {
+      const journal = f(stored);
+      if (journal.record.channel !== channel) throw fail("Mismatched Channel Record");
+      Schema.decodeSync(recordSchema, { onExcessProperty: "error" })(journal.record);
+      return { journal, ids, clear: journal.entries.size === 0 };
     });
-    return parse(channel, text);
   });
 const requireJournal = (journal: Journal | undefined) => {
   if (!journal) throw fail("Missing Channel Record");
@@ -115,12 +114,9 @@ const requireJournal = (journal: Journal | undefined) => {
 export const readJournal = (channel: string) =>
   Effect.gen(function* () {
     const store = yield* ProgressStore;
-    const text = yield* store.read(channel);
-    if (text === undefined) return undefined;
-    return yield* Effect.try({
-      try: () => parse(channel, text),
-      catch: (error) => fail(String(error)),
-    });
+    return yield* store
+      .loadJournal(channel, parse)
+      .pipe(Effect.mapError((error) => fail(error.message)));
   });
 export const openChannelRecord = (
   channel: string,
@@ -153,29 +149,39 @@ export const openChannelRecord = (
 export const updateRecord = (journal: Journal, next: ChannelRecord) =>
   change(journal.record.channel, (stored) => ({ ...requireJournal(stored), record: next }));
 export const journalPage = (journal: Journal, ids: readonly string[]) =>
-  change(journal.record.channel, (stored) => {
-    const current = requireJournal(stored);
-    const entries = new Map(current.entries);
-    for (const id of ids) if (!entries.has(id)) entries.set(id, undefined);
-    return { ...current, entries };
-  });
+  change(
+    journal.record.channel,
+    (stored) => {
+      const current = requireJournal(stored);
+      const entries = new Map(current.entries);
+      for (const id of Schema.decodeSync(Schema.Array(snowflake))(ids))
+        if (!entries.has(id)) entries.set(id, undefined);
+      return { ...current, entries };
+    },
+    ids,
+  );
 export const journalStatus = (journal: Journal, status: Status) =>
-  change(journal.record.channel, (stored) => {
-    const current = requireJournal(stored);
-    if (!current.entries.has(status.id)) throw fail("Status without journaled Link Post");
-    const old = current.entries.get(status.id);
-    if (
-      old &&
-      !isDeepStrictEqual(old, status) &&
-      status.state !== "pending" &&
-      old.state !== "pending" &&
-      status.state !== "terminal"
-    )
-      throw fail("Invalid journal transition");
-    const entries = new Map(current.entries);
-    entries.set(status.id, status);
-    return { ...current, entries };
-  });
+  change(
+    journal.record.channel,
+    (stored) => {
+      const current = requireJournal(stored);
+      Schema.decodeSync(statusSchema, { onExcessProperty: "error" })(status);
+      if (!current.entries.has(status.id)) throw fail("Status without journaled Link Post");
+      const old = current.entries.get(status.id);
+      if (
+        old &&
+        !isDeepStrictEqual(old, status) &&
+        status.state !== "pending" &&
+        old.state !== "pending" &&
+        status.state !== "terminal"
+      )
+        throw fail("Invalid journal transition");
+      const entries = new Map(current.entries);
+      entries.set(status.id, status);
+      return { ...current, entries };
+    },
+    [status.id],
+  );
 /** Discord publication is reconciled before committing the local READY manifest. */
 export const persistReady = (
   api: DiscordApi,

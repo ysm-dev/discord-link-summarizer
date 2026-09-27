@@ -62,7 +62,9 @@ it.effect("corrupt persisted records fail closed instead of resetting onboarding
       yield* store.change("10", () =>
         JSON.stringify({ record: { ...initial.record, ...change }, entries: [] }),
       );
-      expect(yield* Effect.exit(readJournal("10"))).toMatchObject({ _tag: "Failure" });
+      const error = yield* Effect.flip(readJournal("10"));
+      expect(error).toMatchObject({ _tag: "RecordError" });
+      if (change.channel === "11") expect(error.message).toContain("Mismatched Channel Record");
     }
   }),
 );
@@ -100,6 +102,9 @@ it.effect("invalid READY and non-READY fields are rejected without changing dura
       );
       expect(yield* readJournal("10")).toEqual(journal);
     }
+    const extra = { ...base, unexpected: true };
+    expect((yield* Effect.flip(journalStatus(journal, extra))).message).toContain("unexpected");
+    expect(yield* readJournal("10")).toEqual(journal);
   }),
 );
 

@@ -12,6 +12,7 @@ import {
 import { adoptInProgress } from "../src/channel-discovery.ts";
 import { horizon, journaledLink, now, open, prepare, since } from "./channel-record-fixture.ts";
 import { at, openRecord, setup } from "./run-fixture.ts";
+import { ProgressStore } from "../src/progress-store.ts";
 
 it.effect(
   "a rescan deadline preserves existing cursors and never returns an unpersisted new cursor",
@@ -61,11 +62,30 @@ it.effect(
     }),
 );
 
-it.effect("an empty first archive page leaves the record unchanged", () =>
+it.effect("an empty archive pass is checkpointed and not repeated before work admission", () =>
   Effect.gen(function* () {
-    const { api } = yield* prepare;
+    const { api, fake } = yield* prepare;
     const journal = yield* open();
-    expect(yield* adoptInProgress(api, "bot", journal, "guild", Infinity)).toEqual(journal);
+    const store = yield* ProgressStore;
+    let edits = 0;
+    const counted = ProgressStore.of({
+      ...store,
+      editJournal: (...args) => {
+        edits++;
+        return store.editJournal(...args);
+      },
+    });
+    const complete = yield* adoptInProgress(api, "bot", journal, "guild", Infinity).pipe(
+      Effect.provideService(ProgressStore, counted),
+    );
+    expect(edits).toBe(1);
+    expect(complete).toEqual({
+      ...journal,
+      record: { ...journal.record, archiveBefore: null, archiveComplete: true },
+    });
+    fake.requests.length = 0;
+    expect(yield* adoptInProgress(api, "bot", yield* open(), "guild", Infinity)).toEqual(complete);
+    expect(fake.requests).toHaveLength(0);
   }),
 );
 
@@ -82,7 +102,15 @@ it.effect(
       expect(yield* rewindRecent(api, "bot", journal, since, horizon)).toEqual(journal);
       const recent = fake.addMessage("10", "https://recent.test", now - 50);
       fake.faults.push({ method: "GET", path: `/channels/${recent.id}`, status: 403 });
-      expect(yield* Effect.flip(rewindRecent(api, "bot", journal, since, horizon))).toMatchObject({
+      expect(yield* rewindRecent(api, "bot", journal, since, horizon)).toEqual(journal);
+      expect(fake.requests.some((request) => request.path === `/channels/${recent.id}`)).toBe(
+        false,
+      );
+      const terminal = yield* journalStatus(yield* journalPage(journal, [recent.id]), {
+        id: recent.id,
+        state: "terminal",
+      });
+      expect(yield* Effect.flip(rewindRecent(api, "bot", terminal, since, horizon))).toMatchObject({
         kind: "forbidden",
       });
     }),

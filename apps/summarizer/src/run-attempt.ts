@@ -16,6 +16,7 @@ import { linkFromPost, linkPostState, threadTitle } from "./link-post.ts";
 import type { OpenCodeAttempt, OpenCodeError, OpenCodeResult } from "./opencode-client.ts";
 import type { PublicationResult } from "./session-publication.ts";
 import { splitSummary } from "./summary.ts";
+import { measured } from "./performance.ts";
 
 export interface Work {
   readonly id: string;
@@ -27,15 +28,26 @@ const history = (api: DiscordApi, thread: string) =>
     Effect.map((messages) => messages.toReversed()),
   );
 
-const writeMessage = (api: DiscordApi, thread: string, content: string) =>
+const writeMessage = (
+  api: DiscordApi,
+  thread: string,
+  content: string,
+  known: Set<string>,
+  bot: string,
+) =>
   Effect.gen(function* () {
-    const before = new Set((yield* history(api, thread)).map((m) => m.id));
     const result = yield* Effect.exit(api.createMessage(thread, content));
-    if (Exit.isSuccess(result)) return result.value;
+    if (Exit.isSuccess(result)) {
+      known.add(result.value.id);
+      return result.value;
+    }
     const matches = (yield* history(api, thread)).filter(
-      (m) => !before.has(m.id) && m.content === content,
+      (m) => !known.has(m.id) && isBotOutput(m, bot) && m.content === content,
     );
-    if (matches.length === 1) return matches[0]!;
+    if (matches.length === 1) {
+      known.add(matches[0]!.id);
+      return matches[0]!;
+    }
     return yield* Effect.failCause(result.cause);
   });
 
@@ -277,7 +289,8 @@ const attempt = (
     const { api, bot, journal, item } = context;
     const thread = item.id;
     const value: Note = { kind: "started", number, maximum: settings.maxAttempts };
-    const note = yield* writeMessage(api, thread, formatNote(value));
+    const known = new Set(messages.map((message) => message.id));
+    const note = yield* writeMessage(api, thread, formatNote(value), known, bot);
     return yield* Effect.gen(function* () {
       const outcome = yield* openCode
         .run(
@@ -292,7 +305,9 @@ const attempt = (
           Duration.toMillis(settings.summaryTimeout),
           settings.deleteSessions,
         )
-        .pipe(Effect.timeoutOption(Duration.toMillis(settings.summaryTimeout)));
+        .pipe(Effect.timeoutOption(Duration.toMillis(settings.summaryTimeout)), (effect) =>
+          measured("model", effect),
+        );
       if (Option.isNone(outcome)) {
         return yield* finishFailure(
           context,
@@ -304,38 +319,51 @@ const attempt = (
         );
       }
       const result = outcome.value;
-      const published = yield* publication.publish(result.sessionID, settings.deleteSessions);
-      if (published.type === "deferred")
-        yield* Effect.logWarning(`Publication deferred ${result.sessionID}: ${published.reason}`);
-      if (result.type !== "succeeded") {
-        const reason = result.type === "failed" ? result.reason : "interrupted";
-        if (
-          /^(?:provider\.(?:auth|quota|no-route|transport|rate-limit|internal|timeout)|disk)/u.test(
-            reason,
-          )
-        ) {
-          yield* interrupted(api, thread, note, value);
-          return yield* new AttemptFailure({ message: `OpenCode infrastructure: ${reason}` });
+      return yield* Effect.gen(function* () {
+        if (result.type !== "succeeded") {
+          const reason = result.type === "failed" ? result.reason : "interrupted";
+          if (
+            /^(?:provider\.(?:auth|quota|no-route|transport|rate-limit|internal|timeout)|disk)/u.test(
+              reason,
+            )
+          ) {
+            yield* interrupted(api, thread, note, value);
+            return yield* new AttemptFailure({ message: `OpenCode infrastructure: ${reason}` });
+          }
+          return yield* finishFailure(
+            context,
+            note,
+            number,
+            settings.maxAttempts,
+            name,
+            `요약 실패 (${reason})`,
+          );
         }
-        return yield* finishFailure(
-          context,
-          note,
-          number,
-          settings.maxAttempts,
-          name,
-          `요약 실패 (${reason})`,
-        );
-      }
-      for (const old of summaryParts(messages, bot)) yield* api.deleteMessage(thread, old.id);
-      const parts: DiscordMessage[] = [];
-      for (const content of splitSummary(result.text))
-        parts.push(yield* writeMessage(api, thread, content));
-      const ready = yield* persistReady(api, bot, journal, item.id, parts);
-      for (const old of [...notesOf(messages, bot).map((entry) => entry.message), note])
-        yield* api.deleteMessage(thread, old.id);
-      yield* rename(api, thread, name);
-      yield* verifyCommitted(api, item.channel.id, item.id, bot, ready);
-      return yield* journalStatus(ready, { id: item.id, state: "terminal" });
+        for (const old of summaryParts(messages, bot)) yield* api.deleteMessage(thread, old.id);
+        const parts: DiscordMessage[] = [];
+        for (const content of splitSummary(result.text))
+          parts.push(yield* writeMessage(api, thread, content, known, bot));
+        const ready = yield* persistReady(api, bot, journal, item.id, parts);
+        for (const old of [...notesOf(messages, bot).map((entry) => entry.message), note])
+          yield* api.deleteMessage(thread, old.id);
+        yield* rename(api, thread, name);
+        yield* verifyCommitted(api, item.channel.id, item.id, bot, ready);
+        return yield* journalStatus(ready, { id: item.id, state: "terminal" });
+      }).pipe(
+        (effect) => measured("discord-publication", effect),
+        Effect.tap(() =>
+          measured(
+            "transcript-publication",
+            publication.publish(result.sessionID, settings.deleteSessions),
+          ).pipe(
+            Effect.flatMap((published) =>
+              published.type === "deferred"
+                ? Effect.logWarning(`Publication deferred ${result.sessionID}: ${published.reason}`)
+                : Effect.void,
+            ),
+          ),
+        ),
+      );
     }).pipe(Effect.onError(() => interrupted(api, thread, note, value)));
   });
 

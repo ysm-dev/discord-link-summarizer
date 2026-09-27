@@ -113,16 +113,19 @@ it.effect("dry-run labels an old journaled thread lookup that reaches the deadli
     discord.faults.push({
       method: "GET",
       path: `/channels/${source.id}`,
-      pause: 30 * 60_000,
+      pause: 10_000,
     });
     const messages = structuredClone(discord.messages);
     const threads = structuredClone(discord.threads);
     const { logs, layer } = captureLogs();
     const fiber = yield* Effect.forkChild(
-      invokeWith(sinceDaysAgo(2), true).pipe(Effect.provide(layer)),
+      invokeWith(
+        sinceDaysAgo(2) + "run_budget: 5 seconds\nsummary_timeout: 5 seconds\n",
+        true,
+      ).pipe(Effect.provide(layer)),
     );
     yield* waitForFault(discord);
-    yield* TestClock.adjust("30 minutes");
+    yield* TestClock.adjust("10 seconds");
     expect(yield* Fiber.join(fiber)).toBe(0);
     expect(logs.join(" ")).toContain("Pending 0, In progress 1, Given up 0 (partial)");
     expect(discord.messages).toEqual(messages);

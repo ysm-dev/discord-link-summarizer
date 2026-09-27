@@ -6,6 +6,7 @@ import {
   DateTime,
   Duration,
   Effect,
+  Fiber,
   Layer,
   Option,
   Redacted,
@@ -15,11 +16,18 @@ import type { Settings } from "./config.ts";
 import {
   adoptInProgress,
   beginScan,
+  discoveryComplete,
   dueJournalIds,
   rewindRecent,
   scanPages,
 } from "./channel-discovery.ts";
-import { openChannelRecord, readJournal, settleRecord, type Journal } from "./channel-record.ts";
+import {
+  openChannelRecord,
+  readJournal,
+  settleRecord,
+  updateRecord,
+  type Journal,
+} from "./channel-record.ts";
 import { Discord, DiscordLive, type DiscordApi } from "./discord-client.ts";
 import type { DiscordThread } from "./discord-schema.ts";
 import { linkFromPost, linkPostState } from "./link-post.ts";
@@ -29,6 +37,7 @@ import { workOn } from "./run-attempt.ts";
 import { SessionPublication } from "./session-publication.ts";
 import { ProgressStore } from "./progress-store.ts";
 import { normalLowerBound } from "./window.ts";
+import { measured } from "./performance.ts";
 
 type Channel = Settings["channels"][number];
 type Resolved = { readonly channel: Channel; readonly guild: string };
@@ -308,6 +317,18 @@ const discover = (
 ) =>
   Effect.gen(function* () {
     const journals = new Map<string, Journal>();
+    const active = new Map<string, readonly DiscordThread[]>();
+    const discoveryApi = {
+      ...api,
+      listActiveThreads: (guild: string) =>
+        Effect.gen(function* () {
+          const cached = active.get(guild);
+          if (cached) return cached;
+          const threads = yield* api.listActiveThreads(guild);
+          active.set(guild, threads);
+          return threads;
+        }),
+    };
     for (const { channel, guild } of valid) {
       let journal: Journal = yield* openChannelRecord(channel.id, channel.since, settings.horizon);
       journal = yield* rewindRecent(
@@ -322,7 +343,16 @@ const discover = (
             Duration.toMillis(settings.runBudget) / (2 * valid.length),
         ),
       );
-      journal = yield* adoptInProgress(api, bot, journal, guild, budget);
+      journal = yield* measured(
+        "archive-discovery",
+        adoptInProgress(
+          discoveryApi,
+          bot,
+          journal,
+          guild,
+          budget - Duration.toMillis(settings.runBudget) / 2,
+        ),
+      );
       journal = yield* settleRecord(journal);
       journals.set(channel.id, yield* beginScan(api, journal));
     }
@@ -374,8 +404,12 @@ export const run = (
       );
       return skipped ? 1 : 0;
     }
-    const journals = yield* discover(api, identity.user.id, settings, valid, budget);
+    const journals = yield* measured(
+      "discovery",
+      discover(api, identity.user.id, settings, valid, budget),
+    );
     const queue = dueJournalIds([...journals.values()]);
+    const complete = discoveryComplete([...journals.values()]);
     if ((yield* Clock.currentTimeMillis) >= budget) return skipped ? 1 : 0;
     const serverLayer = OpenCodeServer.layer({
       directory: settings.opencode.directory,
@@ -398,23 +432,37 @@ export const run = (
       const stale =
         (yield* Clock.currentTimeMillis) - Duration.toMillis(settings.summaryTimeout) - 120_000;
       yield* client.sweep(stale, settings.deleteSessions);
-      const pending = yield* publication
-        .pending(settings.deleteSessions)
-        .pipe(
-          Effect.catch((error) =>
-            Effect.logWarning(`Publication deferred: ${error.reason}`).pipe(Effect.as(undefined)),
+      const publishing = yield* Effect.forkScoped(
+        measured(
+          "transcript-maintenance",
+          publication
+            .pending(settings.deleteSessions)
+            .pipe(
+              Effect.catch((error) =>
+                Effect.logWarning(`Publication deferred: ${error.reason}`).pipe(
+                  Effect.as(undefined),
+                ),
+              ),
+            ),
+        ).pipe(
+          Effect.flatMap((pending) =>
+            Effect.gen(function* () {
+              if (pending)
+                for (const result of pending)
+                  if (result.type === "deferred")
+                    yield* Effect.logWarning(`Publication deferred ${result.id}: ${result.reason}`);
+            }),
           ),
-        );
-      if (pending)
-        for (const result of pending)
-          if (result.type === "deferred")
-            yield* Effect.logWarning(`Publication deferred ${result.id}: ${result.reason}`);
+        ),
+      );
       const runID = crypto.randomUUID();
+      let admitted = queue.length === 0;
       yield* Effect.forEach(
         queue,
         ({ id, channel: channelId }) =>
           Effect.gen(function* () {
             if ((yield* Clock.currentTimeMillis) >= budget) return void 0;
+            admitted = true;
             const channel = valid.find((entry) => entry.channel.id === channelId)!.channel;
             yield* workOn(
               api,
@@ -430,8 +478,12 @@ export const run = (
           }),
         { concurrency: settings.concurrency },
       );
+      yield* Fiber.join(publishing);
       for (const { channel } of valid) {
-        yield* settleRecord(journals.get(channel.id)!);
+        const settled = yield* settleRecord(journals.get(channel.id)!);
+        // Keep completed archive passes across Runs until every channel has reached work admission.
+        if (admitted && complete)
+          yield* updateRecord(settled, { ...settled.record, archiveComplete: false });
       }
       return skipped ? 1 : 0;
     }).pipe(Effect.provide(layer));

@@ -47,6 +47,29 @@ export type Transfer = typeof Transfer.Type;
 
 const fail = (reason: string) => new OpenCodeError({ reason });
 
+const Session = Schema.Struct({
+  id: Schema.String,
+  time: Schema.Struct({ created: Schema.Finite, updated: Schema.Finite }),
+  outcome: Schema.optional(Schema.Literals(["succeeded", "failed", "interrupted"])),
+  metadata: Schema.optional(
+    Schema.Struct({
+      summarizer: Schema.optional(
+        Schema.Struct({
+          channelID: Schema.String,
+          messageID: Schema.String,
+          runID: Schema.String,
+          published: Schema.optional(Schema.Literal(true)),
+        }),
+      ),
+    }),
+  ),
+});
+type Terminal = { id: string; created: number };
+const collectTerminal = (entries: Terminal[], session: typeof Session.Type) => {
+  if (session.metadata?.summarizer && session.outcome && !session.metadata.summarizer.published)
+    entries.push({ id: session.id, created: session.time.created });
+};
+
 /** A location-bound v2 client. Construct once per private server; supply a scoped HTTP client. */
 export class OpenCode extends Context.Service<
   OpenCode,
@@ -84,24 +107,8 @@ export class OpenCode extends Context.Service<
         const Commands = Schema.Struct({
           data: Schema.Array(Schema.Struct({ name: Schema.String })),
         });
-        const Session = Schema.Struct({
-          id: Schema.String,
-          time: Schema.Struct({ created: Schema.Finite, updated: Schema.Finite }),
-          outcome: Schema.optional(Schema.Literals(["succeeded", "failed", "interrupted"])),
-          metadata: Schema.optional(
-            Schema.Struct({
-              summarizer: Schema.optional(
-                Schema.Struct({
-                  channelID: Schema.String,
-                  messageID: Schema.String,
-                  runID: Schema.String,
-                  published: Schema.optional(Schema.Literal(true)),
-                }),
-              ),
-            }),
-          ),
-        });
         const SessionResponse = Schema.Struct({ data: Session });
+        let swept: Terminal[] | undefined;
         const PublishedInfo = Schema.Struct({
           id: Schema.String,
           outcome: Schema.Literals(["succeeded", "failed", "interrupted"]),
@@ -229,6 +236,7 @@ export class OpenCode extends Context.Service<
           timeout: number,
           deleteSession: boolean,
         ) {
+          swept = undefined;
           const body = {
             title: `🔗 ${attempt.label} · ${attempt.link}`,
             agent: options.agent,
@@ -351,27 +359,24 @@ export class OpenCode extends Context.Service<
           }
         });
         const sweep = Effect.fnUntraced(function* (olderThan: number, deleteFinished: boolean) {
+          swept = undefined;
+          const entries: Terminal[] = [];
           let removed = 0;
           yield* list((session) =>
             session.metadata?.summarizer &&
             ((deleteFinished && session.outcome) ||
               (!session.outcome && session.time.updated < olderThan))
               ? remove(session.id).pipe(Effect.tap(() => Effect.sync(() => removed++)))
-              : Effect.void,
+              : Effect.sync(() => collectTerminal(entries, session)),
           );
+          swept = entries;
           return removed;
         });
         const terminalSessions = Effect.gen(function* () {
-          const entries: Array<{ id: string; created: number }> = [];
-          yield* list((session) =>
-            session.metadata?.summarizer &&
-            session.outcome &&
-            !session.metadata.summarizer.published
-              ? Effect.sync(() => {
-                  entries.push({ id: session.id, created: session.time.created });
-                })
-              : Effect.void,
-          );
+          const entries = swept ?? [];
+          if (!swept)
+            yield* list((session) => Effect.sync(() => collectTerminal(entries, session)));
+          swept = undefined;
           return entries
             .toSorted((a, b) => a.created - b.created || a.id.localeCompare(b.id))
             .map((item) => item.id);
@@ -401,6 +406,7 @@ export class OpenCode extends Context.Service<
               ),
             );
         const markPublished = Effect.fnUntraced(function* (id: string, source: Transfer) {
+          swept = undefined;
           const info = yield* Schema.decodeUnknownEffect(PublishedInfo)(source.info).pipe(
             Effect.mapError(() => fail(`Cannot mark invalid OpenCode session ${id}`)),
           );

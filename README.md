@@ -96,6 +96,20 @@ After machine loss, clone this repo and translate; restore/provision Bun, crnd, 
 
 Separately restore the persistent **private** OpenCode DB or enroll its provider again, install the translate agent/plugin, and set checkout paths and Since in `config.yml` and the paused job fragment. Re-export the target scheduler's full job set (including wachi), merge the fragment and verify it as above; never import the fragment alone. Run `--dry-run`, verify permissions and that partial discovery is identified, then verify one test channel and terminal transcript publication to the interactive translate list before resuming. `OPENCODE_DB` holds private transcripts and credentials, not summarizer progress. If the interactive service is unavailable, terminal transcripts stay private and are retried on a later Run. Check `crnd runs`/`crnd logs` and the recovery protocol before declaring the backlog clear.
 
+## Performance diagnostics
+
+Runs emit `performance phase=... elapsed_ms=...` logs for discovery, archive
+adoption, model execution, Discord publication and transcript publication. The
+Discord service also reports `discord_requests` (including explicit 429 retries)
+and `discord_wait_ms` (summed lane queueing and rate-limit waits). Concurrent
+waits can make this total exceed wall time. These logs contain no source URLs or
+credentials. Compare stage times and request counts before increasing concurrency.
+
+The regression suite checks constant history-read counts for multipart summaries,
+multi-Run archive catch-up, publication ordering, request deadlines, and atomic
+migration of legacy progress databases. Progress writes now update individual
+SQLite entry rows; see the [recovery protocol](docs/recovery-protocol.md).
+
 ## The gates
 
 | Gate                  | Threshold      | Command                |

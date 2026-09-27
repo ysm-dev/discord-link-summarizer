@@ -1,4 +1,4 @@
-import { Clock, Context, Effect, Layer, Option, Redacted, Schema, Semaphore } from "effect";
+import { Clock, Context, Effect, Layer, Option, Redacted, Schema, Scope, Semaphore } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
 import {
   ActiveThreads,
@@ -113,12 +113,17 @@ export class Discord extends Context.Service<Discord, DiscordApi>()("Discord") {
 /** One serialized HTTP lane preserves the bucket and global deadlines under concurrent Runs. */
 const makeDiscord = (
   token: Redacted.Redacted,
-): Effect.Effect<DiscordApi, never, HttpClient.HttpClient> =>
+): Effect.Effect<DiscordApi, never, HttpClient.HttpClient | Scope.Scope> =>
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
     const lane = yield* Semaphore.make(1);
     const buckets = new Map<string, number>();
     const routes = new Map<string, string>();
+    let requests = 0;
+    let waitMs = 0;
+    yield* Effect.addFinalizer(() =>
+      Effect.logInfo(`performance discord_requests=${requests} discord_wait_ms=${waitMs}`),
+    );
 
     const rate = (
       response: HttpClientResponse.HttpClientResponse,
@@ -138,7 +143,7 @@ const makeDiscord = (
         if (response.status !== 429) return false;
         const rateBody = yield* HttpClientResponse.schemaBodyJson(DiscordRateLimitBody())(
           response,
-        ).pipe(Effect.option);
+        ).pipe(Effect.timeout("15 seconds"), Effect.option);
         const seconds = Option.isSome(rateBody)
           ? rateBody.value.retry_after
           : Number(response.headers["retry-after"]);
@@ -167,32 +172,41 @@ const makeDiscord = (
     };
 
     const send = (method: typeof HttpClientRequest.get, path: string, body?: object) =>
-      lane.withPermit(
-        Effect.gen(function* () {
-          const started = yield* Clock.currentTimeMillis;
-          const request = requestFor(method, path, body);
-          const route = `${request.method} ${path.split("?")[0]}`;
-          for (;;) {
-            const now = yield* Clock.currentTimeMillis;
-            const until = buckets.get(routes.get(route) ?? route) ?? 0;
-            if (until - started > maxWaitMs)
-              return yield* Effect.fail(new DiscordFailure("outage"));
-            yield* Effect.sleep(Math.max(0, until - now));
-            // POST transport failures may have committed on Discord. Never blindly replay them.
-            const response = yield* client
-              .execute(request)
-              .pipe(Effect.mapError(() => new DiscordFailure("outage")));
-            if (!(yield* rate(response, route, path, started))) return response;
-            // A 429 explicitly says the write was not accepted; replaying this response is safe.
-          }
-        }),
-      );
+      Effect.gen(function* () {
+        const queued = yield* Clock.currentTimeMillis;
+        return yield* lane.withPermit(
+          Effect.gen(function* () {
+            const started = yield* Clock.currentTimeMillis;
+            waitMs += started - queued;
+            const request = requestFor(method, path, body);
+            const route = `${request.method} ${path.split("?")[0]}`;
+            for (;;) {
+              const now = yield* Clock.currentTimeMillis;
+              const until = buckets.get(routes.get(route) ?? route) ?? 0;
+              if (until - started > maxWaitMs)
+                return yield* Effect.fail(new DiscordFailure("outage"));
+              const sleeping = Math.max(0, until - now);
+              yield* Effect.sleep(sleeping);
+              waitMs += sleeping;
+              // POST transport failures may have committed on Discord. Never blindly replay them.
+              requests++;
+              const response = yield* client.execute(request).pipe(
+                Effect.timeout("15 seconds"),
+                Effect.mapError(() => new DiscordFailure("outage")),
+              );
+              if (!(yield* rate(response, route, path, started))) return response;
+              // A 429 explicitly says the write was not accepted; replaying this response is safe.
+            }
+          }),
+        );
+      });
 
     const checked = (method: typeof HttpClientRequest.get, path: string, body?: object) =>
       Effect.gen(function* () {
         const response = yield* send(method, path, body);
         if (response.status < 300) return response;
         const details = yield* HttpClientResponse.schemaBodyJson(DiscordErrorBody())(response).pipe(
+          Effect.timeout("15 seconds"),
           Effect.option,
         );
         return yield* Effect.fail(
@@ -213,6 +227,7 @@ const makeDiscord = (
       response: HttpClientResponse.HttpClientResponse,
     ) =>
       HttpClientResponse.schemaBodyJson(schema)(response).pipe(
+        Effect.timeout("15 seconds"),
         Effect.mapError(() => new DiscordFailure("invalid-response", response.status)),
       );
     const read = <S extends Schema.Constraint>(schema: S, path: string) =>

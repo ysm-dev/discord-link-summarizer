@@ -2,7 +2,7 @@
 description: Reads public links and writes Korean summaries using safe extraction tools
 mode: primary
 hidden: true
-model: opencode-go/gpt-6-luna#max
+model: openai/gpt-6-luna#max
 permissions:
   - action: "*"
     resource: "*"

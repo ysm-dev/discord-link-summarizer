@@ -22,9 +22,12 @@ export const readyManifest = (source: string, parts: readonly DiscordMessage[]) 
   }) satisfies Status;
 /** Match explicit message identities, not note-shaped model text. */
 export const verifyReady = (status: Status, messages: readonly DiscordMessage[], botId: string) => {
-  const parts = status.parts?.map((partId) =>
-    messages.find((message) => message.id === partId && isBotOutput(message, botId)),
+  const byId = new Map(
+    messages
+      .filter((message) => isBotOutput(message, botId))
+      .map((message) => [message.id, message]),
   );
+  const parts = status.parts?.map((partId) => byId.get(partId));
   return (
     status.state === "ready" &&
     parts !== undefined &&

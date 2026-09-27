@@ -49,6 +49,16 @@ state and commits it in one SQLite transaction. Replayed pages deduplicate IDs
 without replacing existing statuses; concurrent Attempts preserve each other's
 updates. Records and manifests have no Discord message-size limit.
 
+Channel metadata and individual journal entries are stored separately in SQLite.
+An Attempt updates only its own entry; changing a discovery cursor does not
+rewrite the backlog. Validated snapshots are cached only for the lifetime of the
+single-writer connection. Settlement still clears entries and advances the floor
+in one transaction. Existing JSON-row databases are read without modification by
+dry-run, and each channel is converted atomically on its first writable journal
+operation. Writable ownership verification upgrades the database marker from
+`DLS1` to `DLS2`, so an older binary refuses the new representation rather than
+mistaking normalized entries for an empty queue.
+
 ## Discovery and ordering
 
 1. Snapshot an epoch's highest actual message ID, then scan newest-to-oldest,
@@ -102,6 +112,13 @@ threads so existing work, including work before a later Since, is adopted.
 Archived pagination uses archive timestamps and `has_more`; a recent-page sample
 does not establish absence. Reopen an archived In-progress thread before work.
 
+Archive passes share the first half of the Run budget with recent rescans. Their
+completion is durable across Runs: a channel that finished enumeration does not
+restart while another channel is still catching up. Completion markers are
+reset after all channels finish discovery and work admission occurs (or there is
+no work). Active threads are fetched once per guild per discovery pass. Historical
+discovery and unfinished archive adoption still block younger work globally.
+
 ## Publication handoff
 
 A non-In-progress Done thread must contain the complete Summary. Multipart
@@ -122,6 +139,20 @@ from them. Human-authored messages are never deleted or modified.
 Reconcile uncertain thread creation by its source ID, uncertain notes/parts by
 thread history, and uncertain commits by thread and part state. Short-lived
 Discord nonce deduplication is supplementary, not a durable claim or journal.
+
+Within one Attempt, acknowledged message IDs augment the initial thread snapshot;
+full history is fetched again for an uncertain POST, READY verification and final
+commit verification. Successful multipart writes do not download the growing
+thread before every part. Only matching ordinary bot messages reconcile an
+uncertain write. Discord HTTP headers and response bodies each have a
+15-second timeout; uncertain writes are never automatically replayed.
+
+Transcript publication follows the durable Discord outcome, so a slow interactive
+OpenCode service does not delay delivery of an already-generated Summary. The
+bounded pending-transcript sweep runs concurrently with current work, is joined
+before Run cleanup, and reuses the private session sweep's listing when it is
+still current. Publication remains eventual and transcripts remain private until
+their target import is verified.
 
 ## Explicit boundaries
 

@@ -138,6 +138,7 @@ it.effect("dry-run leaves a missing database and its parent directory absent", (
       const store = yield* ProgressStore;
       yield* store.owner("bot");
       expect(yield* readJournal("10")).toBeUndefined();
+      expect(yield* store.read("10")).toBeUndefined();
       expect((yield* Effect.flip(store.change("10", () => "no"))).message).toContain("read-only");
     }).pipe(Effect.provide(ProgressStore.layer(path, true)));
     expect(existsSync(join(directory, "absent"))).toBe(false);

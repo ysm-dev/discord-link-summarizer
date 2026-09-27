@@ -6,16 +6,17 @@ import { ProgressStore } from "../src/progress-store.ts";
 import { readyManifest } from "./ready-fixture.ts";
 import {
   at,
+  backfillSetup,
   captureLogs,
   config,
   openRecord,
   seedJournal,
   setup,
-  sinceDaysAgo,
   waitForFault,
 } from "./run-fixture.ts";
 
 const day = 86_400_000;
+const shortBudget = "run_budget: 10 seconds\n";
 const advanced = config.replace(
   "2026-09-01T00:00:00Z",
   DateTime.formatIso(DateTime.makeUnsafe(at - 2 * day)),
@@ -25,23 +26,23 @@ it.effect(
   "recent rescans checkpoint across budget-limited Runs and recover deleted completion without starving journal work",
   () =>
     Effect.gen(function* () {
-      const { discord, invoke } = yield* setup();
+      const { discord, invoke } = yield* setup({}, config + shortBudget);
       const done = discord.addMessage("10", "https://example.test/old", at - 5 * day);
-      expect(yield* invoke()).toBe(0);
-      discord.threads.delete(done.id);
-      const pending = discord.addMessage("10", "https://example.test/pending", at - 4 * day);
-      yield* seedJournal(discord, pending);
       const remaining = [
         discord.addMessage("10", "https://example.test/one", at - 3 * day),
         discord.addMessage("10", "https://example.test/two", at - 2 * day),
       ].toReversed();
+      expect(yield* invoke()).toBe(0);
+      discord.threads.delete(done.id);
+      const pending = discord.addMessage("10", "https://example.test/pending", at - 4 * day);
+      yield* seedJournal(discord, pending);
       for (const source of remaining) {
         // Omitted optional thread fields keep the fallback lookup time-sliced after completion.
         discord.messages.set("10", [done, pending, ...remaining]);
-        discord.faults.push({ method: "GET", path: `/channels/${source.id}`, pause: 11 * 60_000 });
+        discord.faults.push({ method: "GET", path: `/channels/${source.id}`, pause: 5_500 });
         const fiber = yield* Effect.forkChild(invoke());
         yield* waitForFault(discord);
-        yield* TestClock.adjust("11 minutes");
+        yield* TestClock.adjust("5500 millis");
         expect(yield* Fiber.join(fiber)).toBe(0);
         expect(discord.threads.get(pending.id)?.thread_metadata.archived).toBe(true);
         expect(discord.threads.get(done.id)).toBeUndefined();
@@ -142,18 +143,16 @@ it.effect("rebuilds a deleted old READY thread from a cleared manifest", () =>
 
 it.effect("a multi-Run backfill discovers the frozen Horizon tail after time passes", () =>
   Effect.gen(function* () {
-    const recent = sinceDaysAgo(2);
-    const backfill = sinceDaysAgo(10);
-    const { discord, invokeWith } = yield* setup({}, recent);
-    const tail = discord.addMessage("10", "https://example.test/tail", at - 7 * day + 5 * 60_000);
+    const { discord, invokeWith, recent, backfill } = yield* backfillSetup;
+    const tail = discord.addMessage("10", "https://example.test/tail", at - 7 * day + 2500);
     const newer = discord.addMessage("10", "https://example.test/new", at - day);
     expect(yield* invokeWith(recent)).toBe(0);
     expect(discord.threads.get(tail.id)).toBeUndefined();
     discord.messages.set("10", [tail, newer]);
-    discord.faults.push({ method: "GET", path: `/channels/${newer.id}`, pause: 11 * 60_000 });
+    discord.faults.push({ method: "GET", path: `/channels/${newer.id}`, pause: 5_500 });
     const fiber = yield* Effect.forkChild(invokeWith(backfill));
     yield* waitForFault(discord);
-    yield* TestClock.adjust("11 minutes");
+    yield* TestClock.adjust("5500 millis");
     expect(yield* Fiber.join(fiber)).toBe(0);
     expect(yield* invokeWith(backfill)).toBe(0);
     expect(discord.threads.get(tail.id)?.thread_metadata.archived).toBe(true);
@@ -172,14 +171,15 @@ it.effect("distinct deleted completions recover across an interrupted reset", ()
     discord.threads.delete(first.id);
     discord.messages.delete(first.id);
     const store = yield* ProgressStore;
-    const interrupted = {
+    const interrupted = ProgressStore.of({
       ...store,
-      change: (channel: string, f: (stored: string | undefined) => string) =>
-        store.change(channel, (stored) => {
-          if (stored?.includes('"state":"pending"')) throw new Error("interrupted reset");
+      editJournal: (channel, decode, f) =>
+        store.editJournal(channel, decode, (stored) => {
+          if (stored?.entries.get(first.id)?.state === "pending")
+            throw new Error("interrupted reset");
           return f(stored);
         }),
-    };
+    });
     expect(
       (yield* Effect.flip(invoke().pipe(Effect.provideService(ProgressStore, interrupted))))
         .message,
@@ -199,7 +199,10 @@ it.effect("distinct deleted completions recover across an interrupted reset", ()
 
 it.effect("a slow rescan in one channel leaves time to recover a second channel", () =>
   Effect.gen(function* () {
-    const { discord, invoke } = yield* setup({}, config + '  - id: "11"\n    label: Second\n');
+    const { discord, invoke } = yield* setup(
+      {},
+      config + '  - id: "11"\n    label: Second\n' + shortBudget,
+    );
     discord.addChannel("11");
     const first = Array.from({ length: 4 }, (_, index) =>
       discord.addMessage("10", `https://example.test/${index}`, at - 5 * day + index),
@@ -210,12 +213,12 @@ it.effect("a slow rescan in one channel leaves time to recover a second channel"
     discord.messages.set("10", first);
     discord.requests.length = 0;
     for (const source of first)
-      discord.faults.push({ method: "GET", path: `/channels/${source.id}`, pause: 4 * 60_000 });
+      discord.faults.push({ method: "GET", path: `/channels/${source.id}`, pause: 2000 });
     const fiber = yield* Effect.forkChild(invoke());
     yield* waitForFault(discord, 3);
-    yield* TestClock.adjust("4 minutes");
+    yield* TestClock.adjust("2 seconds");
     yield* waitForFault(discord, 2);
-    yield* TestClock.adjust("4 minutes");
+    yield* TestClock.adjust("2 seconds");
     expect(yield* Fiber.join(fiber)).toBe(0);
     expect(discord.threads.get(second.id)?.thread_metadata.archived).toBe(true);
     expect(

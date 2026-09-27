@@ -5,6 +5,8 @@ import { decodeConfig } from "../src/config.ts";
 import { fakeApi } from "./discord-api-fixture.ts";
 import { at, config, seedJournal, setup, stalledWork } from "./run-fixture.ts";
 
+const shortBudget = config + "run_budget: 10 seconds\n";
+
 const waitFor = (predicate: () => boolean) =>
   Effect.gen(function* () {
     for (let index = 0; index < 200 && !predicate(); index++) yield* Effect.yieldNow;
@@ -13,16 +15,16 @@ const waitFor = (predicate: () => boolean) =>
 
 it.effect("stops before claiming work when the discovery budget is spent", () =>
   Effect.gen(function* () {
-    const { discord, invoke, getStarted } = yield* setup();
+    const { discord, invoke, getStarted } = yield* setup({}, shortBudget);
     const post = discord.addMessage("10", "https://example.test/a", at - 1000);
-    discord.faults.push({ method: "GET", path: "/channels/10/messages?", pause: 20 * 60_000 });
+    discord.faults.push({ method: "GET", path: "/channels/10/messages?", pause: 10_000 });
     const fiber = yield* Effect.forkChild(invoke());
     yield* waitFor(() =>
       discord.requests.some((request) => request.path.startsWith("/channels/10/messages?")),
     );
-    yield* TestClock.adjust("20 minutes");
+    yield* TestClock.adjust("10 seconds");
     expect(yield* Fiber.join(fiber)).toBe(0);
-    expect(yield* Clock.currentTimeMillis).toBe(at + 20 * 60_000);
+    expect(yield* Clock.currentTimeMillis).toBe(at + 10_000);
     expect(discord.threads.get(post.id)).toBeUndefined();
     expect(getStarted()).toBe(0);
     expect(yield* invoke()).toBe(0);
@@ -37,7 +39,7 @@ for (const partial of [false, true])
       Effect.gen(function* () {
         const { discord, invoke, getStarted } = yield* setup(
           {},
-          config + '  - id: "11"\n    label: Unreadable\n',
+          config + '  - id: "11"\n    label: Unreadable\nrun_budget: 10 seconds\n',
         );
         discord.addChannel("11");
         if (partial)
@@ -47,7 +49,7 @@ for (const partial of [false, true])
         discord.faults.push({
           method: "GET",
           path: partial ? "/channels/10/messages?limit=100&before=" : "/channels/10/messages?",
-          pause: 20 * 60_000,
+          pause: 10_000,
         });
         const fiber = yield* Effect.forkChild(invoke());
         yield* waitFor(() =>
@@ -57,7 +59,7 @@ for (const partial of [false, true])
             ),
           ),
         );
-        yield* TestClock.adjust("20 minutes");
+        yield* TestClock.adjust("10 seconds");
         expect(yield* Fiber.join(fiber)).toBe(1);
         expect(getStarted()).toBe(0);
       }),
@@ -83,19 +85,19 @@ it.effect("stops the queued second Attempt after the first consumes its Run budg
 
 it.effect("does not start another queued Attempt at the exact Run budget", () =>
   Effect.gen(function* () {
-    const { discord, invoke, openCode } = yield* setup({}, config + "concurrency: 1\n");
+    const { discord, invoke, openCode } = yield* setup({}, shortBudget + "concurrency: 1\n");
     const first = discord.addMessage("10", "https://example.test/first", at - 2000);
     const second = discord.addMessage("10", "https://example.test/second", at - 1000);
     discord.faults.push({
       method: "GET",
       path: `/channels/10/messages/${first.id}`,
-      pause: 20 * 60_000,
+      pause: 10_000,
     });
     const fiber = yield* Effect.forkChild(invoke());
     yield* waitFor(() =>
       discord.requests.some((request) => request.path === `/channels/10/messages/${first.id}`),
     );
-    yield* TestClock.adjust("20 minutes");
+    yield* TestClock.adjust("10 seconds");
     expect(yield* Fiber.join(fiber)).toBe(0);
     expect(discord.threads.get(first.id)?.thread_metadata.archived).toBe(true);
     expect(discord.threads.get(second.id)).toBeUndefined();
@@ -135,7 +137,10 @@ it.effect("skips a completed channel during a multi-channel discovery round", ()
 
 const busyChannels = (prefix: string) =>
   Effect.gen(function* () {
-    const result = yield* setup({}, config + '  - id: "11"\n    label: Second\n');
+    const result = yield* setup(
+      {},
+      config + '  - id: "11"\n    label: Second\nrun_budget: 10 seconds\n',
+    );
     result.discord.addChannel("11");
     for (let index = 0; index < 101; index++) {
       result.discord.addMessage("10", `${prefix}first ${index}`, at - 1000 + index);
@@ -149,16 +154,16 @@ it.effect("does not scan the next channel once the first consumes the discovery 
     const { discord, invoke } = yield* busyChannels("plain ");
     const high = (BigInt(discord.messages.get("10")!.at(-1)!.id) + 1n).toString();
     const prefix = `/channels/10/messages?limit=100&before=${high}`;
-    discord.faults.push({ method: "GET", path: prefix, pause: 20 * 60_000 });
+    discord.faults.push({ method: "GET", path: prefix, pause: 10_000 });
     const fiber = yield* Effect.forkChild(invoke());
     yield* waitFor(() => discord.requests.some((r) => r.path.startsWith(prefix)));
     expect(discord.faults).toEqual([]);
     const secondPages = discord.requests.filter((r) =>
       r.path.startsWith("/channels/11/messages?limit=100&before="),
     ).length;
-    yield* TestClock.adjust("20 minutes");
+    yield* TestClock.adjust("10 seconds");
     expect(yield* Fiber.join(fiber)).toBe(0);
-    expect(yield* Clock.currentTimeMillis).toBe(at + 20 * 60_000);
+    expect(yield* Clock.currentTimeMillis).toBe(at + 10_000);
     expect(
       discord.requests.filter((r) => r.path.startsWith("/channels/11/messages?limit=100&before=")),
     ).toHaveLength(secondPages);
@@ -171,19 +176,22 @@ it.effect("a page finishing at the exact Run deadline cannot start the next chan
     const next = (channel: string) =>
       `/channels/${channel}/messages?limit=100&before=${(BigInt(discord.messages.get(channel)!.at(-1)!.id) + 1n).toString()}`;
     discord.faults.push({ method: "GET", path: next("10"), status: 200 });
-    discord.faults.push({ method: "GET", path: next("10"), pause: 20 * 60_000 });
+    discord.faults.push({ method: "GET", path: next("10"), pause: 10_000 });
     discord.faults.push({ method: "GET", path: next("11"), status: 200 });
     discord.faults.push({ method: "GET", path: next("11"), status: 403 });
     const fiber = yield* Effect.forkChild(invoke());
     yield* waitFor(() => discord.requests.filter((r) => r.path === next("10")).length === 2);
-    yield* TestClock.adjust("20 minutes");
+    yield* TestClock.adjust("10 seconds");
     expect(yield* Fiber.join(fiber)).toBe(0);
   }),
 );
 
 it.effect("a slow first history page leaves a second channel for the next Run", () =>
   Effect.gen(function* () {
-    const { discord, invoke } = yield* setup({}, config + '  - id: "11"\n    label: Second\n');
+    const { discord, invoke } = yield* setup(
+      {},
+      config + '  - id: "11"\n    label: Second\nrun_budget: 10 seconds\n',
+    );
     discord.addChannel("11");
     const first = discord.addMessage("10", "https://example.test/first", at - 2000);
     for (let index = 0; index < 100; index++)
@@ -192,11 +200,11 @@ it.effect("a slow first history page leaves a second channel for the next Run", 
     const high = (BigInt(discord.messages.get("10")!.at(-1)!.id) + 1n).toString();
     const path = `/channels/10/messages?limit=100&before=${high}`;
     discord.faults.push({ method: "GET", path, status: 200 });
-    discord.faults.push({ method: "GET", path, pause: 20 * 60_000 });
+    discord.faults.push({ method: "GET", path, pause: 10_000 });
     const fiber = yield* Effect.forkChild(invoke());
     for (let turn = 0; turn < 200 && discord.faults.length; turn++) yield* Effect.yieldNow;
     expect(discord.faults).toHaveLength(0);
-    yield* TestClock.adjust("20 minutes");
+    yield* TestClock.adjust("10 seconds");
     expect(yield* Fiber.join(fiber)).toBe(0);
     expect(discord.threads.get(first.id)).toBeUndefined();
     expect(discord.threads.get(second.id)).toBeUndefined();
@@ -206,13 +214,33 @@ it.effect("a slow first history page leaves a second channel for the next Run", 
   }),
 );
 
-it.effect("bounds a stalled Discord read at the whole-Run deadline", () =>
+it.effect("bounds a stalled Discord read before the whole-Run deadline", () =>
   Effect.gen(function* () {
     const { discord, invoke, getStarted } = yield* setup();
     discord.faults.push({ method: "GET", path: "/channels/10", pause: 40 * 60_000 });
     const fiber = yield* Effect.forkChild(invoke());
     yield* waitFor(() => discord.requests.some((request) => request.path === "/channels/10"));
-    yield* TestClock.adjust("31 minutes");
+    yield* TestClock.adjust("15 seconds");
+    expect(yield* Effect.flip(Fiber.join(fiber))).toMatchObject({ kind: "outage" });
+    expect(yield* Clock.currentTimeMillis).toBe(at + 15_000);
+    expect(getStarted()).toBe(0);
+  }),
+);
+
+it.effect("the whole-Run deadline bounds accumulated individually valid preflight requests", () =>
+  Effect.gen(function* () {
+    const channels = ["11", "12", "13", "14", "15"];
+    const yaml =
+      config +
+      channels.map((id) => `  - id: "${id}"\n    label: channel-${id}\n`).join("") +
+      "run_budget: 1 millis\nsummary_timeout: 1 millis\n";
+    const { discord, invoke, getStarted } = yield* setup({}, yaml);
+    for (const id of channels) {
+      discord.addChannel(id);
+      discord.faults.push({ method: "GET", path: `/channels/${id}`, pause: 14_000 });
+    }
+    const fiber = yield* Effect.forkChild(invoke());
+    yield* TestClock.adjust(60_002);
     expect(yield* Fiber.join(fiber)).toBe(1);
     expect(getStarted()).toBe(0);
   }),
@@ -220,7 +248,10 @@ it.effect("bounds a stalled Discord read at the whole-Run deadline", () =>
 
 it.effect("labels a deadline-limited dry-run scan partial without mutations", () =>
   Effect.gen(function* () {
-    const { discord, invoke, getStarted } = yield* setup();
+    const { discord, invoke, getStarted } = yield* setup(
+      {},
+      config + "run_budget: 5 seconds\nsummary_timeout: 5 seconds\n",
+    );
     const logs: string[] = [];
     const logger = Logger.make((event) => {
       logs.push(JSON.stringify(event.message));
@@ -230,7 +261,7 @@ it.effect("labels a deadline-limited dry-run scan partial without mutations", ()
     discord.faults.push({
       method: "GET",
       path: "/channels/10/messages?limit=100&before=",
-      pause: 30 * 60_000,
+      pause: 10_000,
     });
     discord.faults.push({
       method: "GET",
@@ -242,7 +273,7 @@ it.effect("labels a deadline-limited dry-run scan partial without mutations", ()
       invoke(true).pipe(Effect.provide(Logger.layer([logger]))),
     );
     yield* waitFor(() => discord.requests.some((request) => request.path.includes("&before=")));
-    yield* TestClock.adjust("30 minutes");
+    yield* TestClock.adjust("10 seconds");
     expect(yield* Fiber.join(fiber)).toBe(0);
     expect(logs.join(" ")).toContain("Pending 200, In progress 0, Given up 0 (partial)");
     expect(discord.requests.some((request) => request.method !== "GET")).toBe(false);
@@ -297,7 +328,7 @@ for (const mode of ["timeout", "interrupt"] as const)
         discord.requests.filter((request) =>
           request.path.startsWith(`/channels/${post.id}/messages?`),
         ),
-      ).toHaveLength(2);
+      ).toHaveLength(1);
       if (mode === "timeout") {
         yield* TestClock.adjust("10 minutes");
         expect((yield* Fiber.join(fiber)).entries.get(post.id)).toBeUndefined();

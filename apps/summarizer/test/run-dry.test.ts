@@ -14,6 +14,7 @@ import { fakeApi } from "./discord-api-fixture.ts";
 import { at, captureLogs, config, seedJournal, setup, waitForFault } from "./run-fixture.ts";
 
 const day = 86_400_000;
+const shortBudget = config + "run_budget: 5 seconds\nsummary_timeout: 5 seconds\n";
 
 it.effect("dry-run includes unadopted old In-progress work across archived pages", () =>
   Effect.gen(function* () {
@@ -70,7 +71,7 @@ it.effect("dry-run fails closed when archived pagination loses its cursor", () =
 for (const listing of ["active", "archived", "empty", "direct"] as const)
   it.effect(`dry-run labels a deadline spent checking ${listing} threads`, () =>
     Effect.gen(function* () {
-      const { discord, invoke } = yield* setup();
+      const { discord, invoke } = yield* setup({}, shortBudget);
       const source =
         listing === "empty" || listing === "direct"
           ? undefined
@@ -89,12 +90,12 @@ for (const listing of ["active", "archived", "empty", "direct"] as const)
           (listing === "archived"
             ? "/channels/10/threads/archived/public"
             : "/guilds/guild/threads/active"),
-        pause: 30 * 60_000,
+        pause: 10_000,
       });
       const { logs, layer } = captureLogs();
       const fiber = yield* Effect.forkChild(invoke(true).pipe(Effect.provide(layer)));
       yield* waitForFault(discord);
-      yield* TestClock.adjust("30 minutes");
+      yield* TestClock.adjust("10 seconds");
       expect(yield* Fiber.join(fiber)).toBe(0);
       expect(logs.join(" ")).toContain(
         `Pending ${listing === "direct" ? 2 : 0}, In progress 0, Given up 0 (partial)`,
@@ -223,7 +224,7 @@ it.effect("dry-run reports an uninitialized channel without looking up phantom j
     discord.messages.set("10", []);
     logs.length = 0;
     expect(yield* invoke(true).pipe(Effect.provide(layer))).toBe(0);
-    expect(logs).toEqual([
+    expect(logs.filter((line) => !line.startsWith("performance "))).toEqual([
       `News: effective start ${new Date(at - 7 * 86_400_000).toISOString()} uninitialized; Pending 0, In progress 0, Given up 0`,
     ]);
   }),
@@ -325,13 +326,13 @@ it.effect("dry-run skips terminal and already-seen references and tolerates dele
   }),
 );
 
-for (const [minutes, partial] of [
-  [15, false],
-  [30, true],
+for (const [seconds, partial] of [
+  [5, false],
+  [10, true],
 ] as const)
-  it.effect(`dry-run ${partial ? "labels" : "completes"} a ${minutes}-minute journal lookup`, () =>
+  it.effect(`dry-run ${partial ? "labels" : "completes"} a ${seconds}-second journal lookup`, () =>
     Effect.gen(function* () {
-      const { discord, invoke } = yield* setup();
+      const { discord, invoke } = yield* setup({}, shortBudget);
       const older = discord.addMessage("10", "https://example.test/older", at - 9 * 86_400_000);
       const newer = discord.addMessage("10", "https://example.test/newer", at - 8 * 86_400_000);
       discord.addMessage("10", "https://example.test/recent", at - 100);
@@ -340,7 +341,7 @@ for (const [minutes, partial] of [
       discord.faults.push({
         method: "GET",
         path: `/channels/10/messages/${older.id}`,
-        pause: minutes * 60_000,
+        pause: seconds * 1000,
       });
       if (partial)
         discord.faults.push({
@@ -362,7 +363,7 @@ for (const [minutes, partial] of [
       expect(discord.requests.some((r) => r.path === `/channels/10/messages/${older.id}`)).toBe(
         true,
       );
-      yield* TestClock.adjust(`${minutes} minutes`);
+      yield* TestClock.adjust(`${seconds} seconds`);
       expect(yield* Fiber.join(fiber)).toBe(0);
       expect(logs.join(" ").includes("(partial)")).toBe(partial);
       expect(logs.join(" ")).toContain(`Pending ${partial ? 2 : 3}, In progress 0, Given up 0`);

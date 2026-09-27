@@ -3,9 +3,10 @@ import { Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
 import { journalStatus, readJournal, type Status } from "../src/channel-record.ts";
 import { readyManifest } from "./ready-fixture.ts";
-import { at, seedJournal, setup, sinceDaysAgo, waitForFault } from "./run-fixture.ts";
+import { at, backfillSetup, config, seedJournal, setup, waitForFault } from "./run-fixture.ts";
 
 const day = 86_400_000;
+const shortBudget = "run_budget: 10 seconds\n";
 const readyStatusFor = (id: string): Status => ({
   id,
   state: "ready",
@@ -30,25 +31,25 @@ it.effect("a deleted recent READY thread is rebuilt before its next Attempt", ()
 
 it.effect("a deleted completion survives a time-sliced rescan and is rebuilt next Run", () =>
   Effect.gen(function* () {
-    const { discord, invoke } = yield* setup();
+    const { discord, invoke } = yield* setup({}, config + shortBudget);
     const older = discord.addMessage("10", "https://example.test/older", at - 5 * day);
     const done = discord.addMessage("10", "https://example.test/done", at - 4 * day);
     expect(yield* invoke()).toBe(0);
     discord.threads.delete(done.id);
     discord.messages.delete(done.id);
-    discord.faults.push({ method: "GET", path: `/channels/${done.id}`, pause: 10 * 60_000 });
+    discord.faults.push({ method: "GET", path: `/channels/${done.id}`, pause: 5_000 });
     const fiber = yield* Effect.forkChild(invoke());
     yield* waitForFault(discord);
-    yield* TestClock.adjust("10 minutes");
+    yield* TestClock.adjust("5 seconds");
     expect(yield* Fiber.join(fiber)).toBe(0);
     expect(discord.threads.get(done.id)).toBeUndefined();
     expect(discord.threads.get(older.id)?.thread_metadata.archived).toBe(true);
-    discord.faults.push({ method: "GET", path: "/channels/10", pause: 10 * 60_000 });
+    discord.faults.push({ method: "GET", path: "/channels/10", pause: 5_000 });
     discord.faults.push({ method: "GET", path: `/channels/${older.id}`, status: 403 });
     const messageState = structuredClone(discord.messages);
     const paused = yield* Effect.forkChild(invoke());
     yield* waitForFault(discord, 1);
-    yield* TestClock.adjust("10 minutes");
+    yield* TestClock.adjust("5 seconds");
     expect(yield* Fiber.join(paused)).toBe(0);
     expect(discord.threads.get(done.id)).toBeUndefined();
     expect(discord.messages).toEqual(messageState);
@@ -63,19 +64,17 @@ it.effect("a deleted completion survives a time-sliced rescan and is rebuilt nex
 
 it.effect("a changed Since takes effect only after its budget-limited rescan completes", () =>
   Effect.gen(function* () {
-    const recent = sinceDaysAgo(2);
-    const backfill = sinceDaysAgo(10);
-    const { discord, invokeWith } = yield* setup({}, recent);
+    const { discord, invokeWith, recent, backfill } = yield* backfillSetup;
     const old = discord.addMessage("10", "https://example.test/old", at - 5 * day);
     const current = discord.addMessage("10", "https://example.test/current", at - day);
     expect(yield* invokeWith(recent)).toBe(0);
     expect(discord.threads.get(old.id)).toBeUndefined();
     // Exercise reconciliation when the optional thread field is absent.
     discord.messages.set("10", [old, current]);
-    discord.faults.push({ method: "GET", path: `/channels/${current.id}`, pause: 16 * 60_000 });
+    discord.faults.push({ method: "GET", path: `/channels/${current.id}`, pause: 8_000 });
     const fiber = yield* Effect.forkChild(invokeWith(backfill));
     yield* waitForFault(discord);
-    yield* TestClock.adjust("16 minutes");
+    yield* TestClock.adjust("8 seconds");
     expect(yield* Fiber.join(fiber)).toBe(0);
     expect(discord.threads.get(old.id)).toBeUndefined();
     expect(yield* invokeWith(backfill)).toBe(0);
@@ -100,15 +99,15 @@ it.effect("an unchanged rescan does not repeat a completed Summary", () =>
 
 it.effect("a completed rescan revisits newer deletions after its cursor is cleared", () =>
   Effect.gen(function* () {
-    const { discord, invoke } = yield* setup();
+    const { discord, invoke } = yield* setup({}, config + shortBudget);
     const older = discord.addMessage("10", "https://example.test/older", at - 3 * day);
     const newer = discord.addMessage("10", "https://example.test/newer", at - 2 * day);
     expect(yield* invoke()).toBe(0);
     discord.messages.set("10", [older, newer]);
-    discord.faults.push({ method: "GET", path: `/channels/${newer.id}`, pause: 10 * 60_000 });
+    discord.faults.push({ method: "GET", path: `/channels/${newer.id}`, pause: 5_000 });
     const partial = yield* Effect.forkChild(invoke());
     yield* waitForFault(discord);
-    yield* TestClock.adjust("10 minutes");
+    yield* TestClock.adjust("5 seconds");
     expect(yield* Fiber.join(partial)).toBe(0);
     expect(discord.threads.get(older.id)?.thread_metadata.archived).toBe(true);
     expect(yield* invoke()).toBe(0);
@@ -124,16 +123,16 @@ it.effect("a completed rescan revisits newer deletions after its cursor is clear
 
 it.effect("an exact rescan deadline defers the deleted thread check until the next Run", () =>
   Effect.gen(function* () {
-    const { discord, invoke } = yield* setup();
+    const { discord, invoke } = yield* setup({}, config + shortBudget);
     const source = discord.addMessage("10", "https://example.test/deleted", at - 100);
     expect(yield* invoke()).toBe(0);
     discord.threads.delete(source.id);
     discord.messages.delete(source.id);
-    discord.faults.push({ method: "GET", path: "/channels/10", pause: 10 * 60_000 });
+    discord.faults.push({ method: "GET", path: "/channels/10", pause: 5_000 });
     discord.faults.push({ method: "GET", path: `/channels/${source.id}`, status: 403 });
     const fiber = yield* Effect.forkChild(invoke());
     yield* waitForFault(discord, 1);
-    yield* TestClock.adjust("10 minutes");
+    yield* TestClock.adjust("5 seconds");
     expect(yield* Fiber.join(fiber)).toBe(0);
     expect(discord.threads.get(source.id)).toBeUndefined();
     discord.faults.length = 0;

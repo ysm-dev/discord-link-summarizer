@@ -9,15 +9,15 @@ it.effect("a failed local post-commit write recovers without another model call"
     const { discord, invoke, openCode } = yield* setup();
     const post = discord.addMessage("10", "https://example.test/a", at - 1000);
     const store = yield* ProgressStore;
-    const failing = {
+    const failing = ProgressStore.of({
       ...store,
-      change: (channel: string, f: (stored: string | undefined) => string) =>
-        store.change(channel, (stored) => {
+      editJournal: (channel, decode, f) =>
+        store.editJournal(channel, decode, (stored) => {
           const next = f(stored);
           if (discord.threads.get(post.id)?.thread_metadata.archived) throw new Error("disk full");
           return next;
         }),
-    };
+    });
     expect(
       (yield* Effect.flip(invoke().pipe(Effect.provideService(ProgressStore, failing)))).message,
     ).toContain("disk full");

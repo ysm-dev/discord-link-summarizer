@@ -61,15 +61,15 @@ const journalThreads = (
   threads: readonly { id: string; owner_id: string; name: string }[],
 ) =>
   Effect.gen(function* () {
-    let result = journal;
-    for (const thread of threads)
-      if (
-        thread.owner_id === botId &&
-        thread.name.startsWith("⏳ ") &&
-        !result.entries.has(thread.id)
+    const ids = threads
+      .filter(
+        (thread) =>
+          thread.owner_id === botId &&
+          thread.name.startsWith("⏳ ") &&
+          !journal.entries.has(thread.id),
       )
-        result = yield* journalPage(result, [thread.id]);
-    return result;
+      .map((thread) => thread.id);
+    return ids.length === 0 ? journal : yield* journalPage(journal, ids);
   });
 
 /** Journal each archive page before advancing its persistent cursor. */
@@ -81,6 +81,7 @@ export const adoptInProgress = (
   budget: number,
 ) =>
   Effect.gen(function* () {
+    if (journal.record.archiveComplete) return journal;
     const active = (yield* api.listActiveThreads(guild)).filter(
       (t) => t.parent_id === journal.record.channel,
     );
@@ -90,12 +91,11 @@ export const adoptInProgress = (
       const page = yield* api.listArchivedThreads(journal.record.channel, before);
       result = yield* journalThreads(botId, result, page.threads);
       if (!page.has_more) {
-        if (before !== undefined)
-          result = yield* updateRecord(result, {
-            ...result.record,
-            archiveBefore: null,
-          });
-        return result;
+        return yield* updateRecord(result, {
+          ...result.record,
+          archiveBefore: null,
+          archiveComplete: true,
+        });
       }
       before = page.threads.at(-1)?.thread_metadata.archive_timestamp;
       if (!before) return yield* fail("Archived thread pagination lacks a cursor");
@@ -107,8 +107,11 @@ export const adoptInProgress = (
     }
   });
 
+export const discoveryComplete = (journals: readonly Journal[]) =>
+  !journals.some((j) => j.record.phase === "scan" || Boolean(j.record.archiveBefore));
+
 export const dueJournalIds = (journals: readonly Journal[]) =>
-  journals.some((j) => j.record.phase === "scan" || Boolean(j.record.archiveBefore))
+  !discoveryComplete(journals)
     ? []
     : journals
         .flatMap((j) =>
@@ -122,14 +125,15 @@ const deletedThread = (api: DiscordApi, botId: string, journal: Journal, source:
   Effect.gen(function* () {
     // History pages include archived threads too; only an absent thread needs reconciliation.
     if (!linkFromPost(source, botId) || source.thread) return false;
+    const state = journal.entries.get(source.id)?.state;
+    if (state !== "terminal" && BigInt(source.id) > BigInt(journal.record.floor)) return false;
     const thread = yield* api.getChannel(source.id).pipe(
       Effect.catchIf(
         (error) => error.kind === "not-found",
         () => Effect.succeed(undefined),
       ),
     );
-    const state = journal.entries.get(source.id)?.state;
-    return !thread && (state === "terminal" || BigInt(source.id) <= BigInt(journal.record.floor));
+    return !thread;
   });
 
 const clearRecent = (record: ChannelRecord): ChannelRecord => {

@@ -13,10 +13,15 @@ export const boundedJson = <A, I, R>(
   response.stream.pipe(
     Stream.runFoldEffect(
       () => ({ parts: [] as Uint8Array[], bytes: 0 }),
-      (state, part) =>
-        state.bytes + part.byteLength > maxTransferBytes
-          ? Effect.fail(new TransferSizeError({ reason: "OpenCode transfer exceeds size limit" }))
-          : Effect.succeed({ parts: [...state.parts, part], bytes: state.bytes + part.byteLength }),
+      (state, part) => {
+        state.bytes += part.byteLength;
+        if (state.bytes > maxTransferBytes)
+          return Effect.fail(
+            new TransferSizeError({ reason: "OpenCode transfer exceeds size limit" }),
+          );
+        state.parts.push(part);
+        return Effect.succeed(state);
+      },
     ),
     Effect.flatMap(({ parts, bytes }) =>
       Schema.decodeEffect(Schema.fromJsonString(schema))(

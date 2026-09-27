@@ -97,6 +97,12 @@ export const setup = (
 export const failureSetup = (errorType: string, yaml = config) =>
   setup({ event: "failed", outcome: "failed", errorType }, yaml);
 
+export const backfillSetup = Effect.gen(function* () {
+  const budget = "run_budget: 10 seconds\n";
+  const recent = sinceDaysAgo(2) + budget;
+  return { ...(yield* setup({}, recent)), recent, backfill: sinceDaysAgo(10) + budget };
+});
+
 export const rejectRename = (discord: FakeDiscord, id: string) =>
   discord.faults.push({ method: "PATCH", path: `/channels/${id}`, status: 400, code: 200000 });
 
