@@ -92,23 +92,18 @@ it.effect("selects only the fixed YouTube script", () =>
   }),
 );
 
-it.effect("accepts the exact byte limit and fails closed above it", () =>
+it.effect("returns large multi-chunk output intact for OpenCode's configured limits", () =>
   Effect.gen(function* () {
-    const good = fakeProcess([Buffer.alloc(200_000, "a")]);
-    const text = yield* runExtraction("page", "https://example.com", "/trusted/translate").pipe(
-      Effect.provide(good.layer),
-    );
-    expect(text).toHaveLength(200_000);
-    expect(good.releases).toBe(1);
-    const bad = fakeProcess([Buffer.alloc(200_001)]);
-    const error = yield* Effect.flip(
-      runExtraction("page", "https://example.com", "/trusted/translate").pipe(
-        Effect.provide(bad.layer),
-      ),
-    );
-    expect(error.message).toBe("Extraction output exceeded limit");
-    expect(error["_tag"]).toBe("ExtractionFailure");
-    expect(bad.releases).toBe(1);
+    const expected = "자막 captions\n".repeat(20_000);
+    const bytes = Buffer.from(expected);
+    for (const kind of ["page", "youtube"] as const) {
+      const fake = fakeProcess([bytes.subarray(0, 200_001), bytes.subarray(200_001)]);
+      const text = yield* runExtraction(kind, "https://youtu.be/abc", "/trusted/translate").pipe(
+        Effect.provide(fake.layer),
+      );
+      expect(text).toBe(expected);
+      expect(fake.releases).toBe(1);
+    }
   }),
 );
 
@@ -121,6 +116,7 @@ it.effect("sanitizes failure text and closes the process scope", () =>
       ),
     );
     expect(error.message).toBe("Extraction failed");
+    expect(error["_tag"]).toBe("ExtractionFailure");
     expect(fake.releases).toBe(1);
     const broken = fakeProcess([], 0, false, true);
     const hidden = yield* Effect.flip(

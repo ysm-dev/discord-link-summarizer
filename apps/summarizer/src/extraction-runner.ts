@@ -4,7 +4,6 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import type { ExtractionKind } from "./extraction-url.ts";
 
 const BUN = "/Users/chris/.bun/bin/bun";
-const LIMIT = 200_000;
 const TIMEOUT = 180_000;
 // oxlint-disable-next-line eslint/no-control-regex -- Strip terminal control bytes from untrusted page text.
 const outputControls = /[\u0000-\u0008\u000b-\u001f\u007f]/gu;
@@ -19,7 +18,6 @@ const scripts: Record<ExtractionKind, string> = {
 };
 
 export function runExtraction(kind: ExtractionKind, url: string, directory: string) {
-  const outputLimit = new ExtractionFailure("Extraction output exceeded limit");
   const command = ChildProcess.make(BUN, [resolve(directory, "scripts", scripts[kind]), url], {
     cwd: directory,
     shell: false,
@@ -34,13 +32,10 @@ export function runExtraction(kind: ExtractionKind, url: string, directory: stri
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const child = yield* spawner.spawn(command);
     const chunks: Buffer[] = [];
-    let size = 0;
+    // OpenCode applies the Location's tool_output limits to the returned result.
     yield* Stream.runForEach(child.stdout, (chunk) =>
-      Effect.suspend(() => {
-        size += chunk.length;
-        if (size > LIMIT) return Effect.fail(outputLimit);
+      Effect.sync(() => {
         chunks.push(Buffer.from(chunk));
-        return Effect.void;
       }),
     );
     if ((yield* child.exitCode) !== 0)
