@@ -29,6 +29,7 @@ import {
 } from "./channel-record.ts";
 import { Discord, DiscordLive, type DiscordApi } from "./discord-client.ts";
 import type { DiscordThread } from "./discord-schema.ts";
+import { extractionPluginID } from "./extraction-url.ts";
 import { linkFromPost, linkPostState } from "./link-post.ts";
 import { OpenCode } from "./opencode-client.ts";
 import { OpenCodeServer } from "./opencode-server.ts";
@@ -428,6 +429,8 @@ export const run = (
       const client = yield* OpenCode;
       const publication = yield* SessionPublication;
       yield* client.commands([...new Set(valid.map(({ channel }) => channel.command))]);
+      // Without its extraction tools the model posts refusals as Summaries; fail the Run instead.
+      yield* client.plugins([extractionPluginID]);
       const stale =
         (yield* Clock.currentTimeMillis) - Duration.toMillis(settings.summaryTimeout) - 120_000;
       yield* client.sweep(stale, settings.deleteSessions);

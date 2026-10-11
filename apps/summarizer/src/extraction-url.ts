@@ -2,6 +2,8 @@ import { isIP } from "node:net";
 import { Schema } from "effect";
 
 export type ExtractionKind = "page" | "youtube";
+/** Shared with the Run, which refuses to start Attempts unless this plugin is active. */
+export const extractionPluginID = "summarizer-extraction";
 // oxlint-disable-next-line eslint/no-control-regex -- Reject embedded control bytes in an untrusted URL.
 const unsafeUrlCharacters = /[\u0000-\u0020\u007f]/u;
 const argsSchema = Schema.Struct({ url: Schema.String });

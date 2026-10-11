@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, expect, it, vi } from "vitest";
 import { fromPartial } from "@total-typescript/shoehorn";
 import type { ToolEditor, Info } from "@opencode/plugin/promise/tool";
@@ -7,6 +8,22 @@ import * as runner from "../src/extraction-runner.ts";
 import { extractionUrl } from "../src/extraction-url.ts";
 
 afterEach(() => vi.restoreAllMocks());
+
+it("imports only modules that OpenCode supplies to the installed plugin", () => {
+  // OpenCode redirects `effect` and `@opencode/plugin` to its own instances; nothing else is installed.
+  for (const file of ["extraction-plugin.ts", "extraction-runner.ts", "extraction-url.ts"]) {
+    const source = readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
+    const imports = [...source.matchAll(/^import\s[^"']*["']([^"']+)["']/gmu)].map(
+      (match) => match[1],
+    );
+    expect(imports.length).toBeGreaterThan(1);
+    expect(source).not.toMatch(/\brequire\(|\bimport\(/u);
+    for (const specifier of imports)
+      expect(specifier).toMatch(
+        /^(?:effect|@opencode\/plugin|node:[a-z_]+|\.\/extraction-(?:runner|url)\.ts)$/u,
+      );
+  }
+});
 
 it.each([
   ["ftp://example.com", "page"],

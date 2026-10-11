@@ -76,6 +76,8 @@ export class OpenCode extends Context.Service<
   {
     readonly model: OpenCodeModel;
     readonly commands: (names: ReadonlyArray<string>) => Effect.Effect<void, OpenCodeError>;
+    /** Waits for each plugin to become active. OpenCode only logs a plugin that fails to load. */
+    readonly plugins: (ids: ReadonlyArray<string>) => Effect.Effect<void, OpenCodeError>;
     /** Returns the created session ID for direct publication. The command timeout begins after creation and SSE readiness;
      * callers needing a whole-Attempt deadline must interrupt the run effect at that deadline (not abandon its fiber). */
     readonly run: (
@@ -106,6 +108,15 @@ export class OpenCode extends Context.Service<
         });
         const Commands = Schema.Struct({
           data: Schema.Array(Schema.Struct({ name: Schema.String })),
+        });
+        const Plugins = Schema.Struct({
+          data: Schema.Array(
+            Schema.Struct({
+              id: Schema.optional(Schema.String),
+              source: Schema.JsonObject,
+              state: Schema.JsonObject,
+            }),
+          ),
         });
         const SessionResponse = Schema.Struct({ data: Session });
         let swept: Terminal[] | undefined;
@@ -158,17 +169,23 @@ export class OpenCode extends Context.Service<
             Effect.flatMap(HttpClientResponse.schemaBodyJson(AgentList)),
             Effect.mapError(() => fail("OpenCode agent registry unavailable")),
           );
-        const model = yield* Effect.gen(function* () {
-          const list = yield* agents();
-          const selected = list.data.find((item) => item.name === options.agent);
-          if (selected?.model) return selected.model;
-          return yield* fail(`Agent ${options.agent} has no explicit model`);
-        }).pipe(
-          Effect.retry({ times: 10, schedule: Schedule.spaced("1 second") }),
-          Effect.timeoutOrElse({
-            duration: "20 seconds",
-            orElse: () => Effect.fail(fail("OpenCode agent readiness timed out")),
+        // A new private server answers before its location has finished loading.
+        const untilReady = <A>(effect: Effect.Effect<A, OpenCodeError>, timedOut: string) =>
+          effect.pipe(
+            Effect.retry({ times: 10, schedule: Schedule.spaced("1 second") }),
+            Effect.timeoutOrElse({
+              duration: "20 seconds",
+              orElse: () => Effect.fail(fail(timedOut)),
+            }),
+          );
+        const model = yield* untilReady(
+          Effect.gen(function* () {
+            const list = yield* agents();
+            const selected = list.data.find((item) => item.name === options.agent);
+            if (selected?.model) return selected.model;
+            return yield* fail(`Agent ${options.agent} has no explicit model`);
           }),
+          "OpenCode agent readiness timed out",
         );
 
         const commands = Effect.fnUntraced(function* (names: ReadonlyArray<string>) {
@@ -180,6 +197,28 @@ export class OpenCode extends Context.Service<
           if (missing !== undefined) return yield* fail(`Unknown OpenCode command: ${missing}`);
           return undefined;
         });
+        // Plugins appear only after loading; a failed plugin has no ID, so report every failure.
+        const plugins = (ids: ReadonlyArray<string>) =>
+          untilReady(
+            Effect.gen(function* () {
+              const list = yield* http.get(`${options.url}/api/plugin`, { urlParams: query }).pipe(
+                Effect.flatMap(HttpClientResponse.schemaBodyJson(Plugins)),
+                Effect.mapError(() => fail("OpenCode plugin registry unavailable")),
+              );
+              const inactive = ids.find(
+                (id) =>
+                  !list.data.some((item) => item.id === id && item.state["status"] === "active"),
+              );
+              if (inactive === undefined) return undefined;
+              const failed = list.data
+                .filter((item) => item.state["status"] === "failed")
+                .map((item) => canonicalJson({ ...item.source, ...item.state }));
+              return yield* fail(
+                `OpenCode plugin ${inactive} is not active; failed plugins: [${failed.join(", ")}]`,
+              );
+            }),
+            "OpenCode plugin readiness timed out",
+          );
         const remove = (id: string) =>
           http.del(`${options.url}/api/session/${encodeURIComponent(id)}`).pipe(
             Effect.asVoid,
@@ -444,6 +483,7 @@ export class OpenCode extends Context.Service<
         return OpenCode.of({
           model,
           commands,
+          plugins,
           run,
           sweep,
           terminalSessions,

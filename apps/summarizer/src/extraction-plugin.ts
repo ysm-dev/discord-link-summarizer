@@ -1,11 +1,10 @@
 import { Plugin } from "@opencode/plugin";
-import { BunServices } from "@effect/platform-bun";
 import { Effect } from "effect";
 import { runExtraction } from "./extraction-runner.ts";
-import { extractionUrl } from "./extraction-url.ts";
+import { extractionPluginID, extractionUrl } from "./extraction-url.ts";
 
 export default Plugin.define({
-  id: "summarizer-extraction",
+  id: extractionPluginID,
   async setup(ctx) {
     await ctx.tool.transform((editor) => {
       editor.namespace({ name: "summarizer", description: "Read public links for summaries" });
@@ -29,9 +28,7 @@ export default Plugin.define({
           },
           execute: async (input, context) => ({
             content: await Effect.runPromise(
-              runExtraction(kind, extractionUrl(input, kind), ctx.location.directory).pipe(
-                Effect.provide(BunServices.layer),
-              ),
+              runExtraction(kind, extractionUrl(input, kind), ctx.location.directory),
               { signal: context.signal },
             ),
           }),

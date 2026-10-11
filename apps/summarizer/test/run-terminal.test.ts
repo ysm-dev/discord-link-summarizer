@@ -1,5 +1,6 @@
 import { expect, it } from "./progress-fixture.ts";
-import { Effect } from "effect";
+import { Effect, Fiber } from "effect";
+import { TestClock } from "effect/testing";
 import type { HttpClient } from "effect/unstable/http";
 import { persistReady, readJournal } from "../src/channel-record.ts";
 import { decodeConfig } from "../src/config.ts";
@@ -33,6 +34,22 @@ it.effect("rejects a missing configured command before starting any Attempt", ()
     const post = discord.addMessage("10", "https://example.test/a", at - 1000);
     expect(yield* Effect.flip(invoke())).toMatchObject({
       reason: "Unknown OpenCode command: unavailable",
+    });
+    expect(discord.threads.get(post.id)).toBeUndefined();
+    expect(openCode.requests).not.toContain("POST /api/session");
+  }),
+);
+
+it.effect("leaves Link Posts Pending while the extraction plugin is not active", () =>
+  Effect.gen(function* () {
+    const { discord, invoke, openCode } = yield* setup({
+      payloads: { plugins: { location: {}, data: [] } },
+    });
+    const post = discord.addMessage("10", "https://example.test/a", at - 1000);
+    const failure = yield* Effect.forkChild(Effect.flip(invoke()));
+    yield* TestClock.adjust("30 seconds");
+    expect(yield* Fiber.join(failure)).toMatchObject({
+      reason: "OpenCode plugin summarizer-extraction is not active; failed plugins: []",
     });
     expect(discord.threads.get(post.id)).toBeUndefined();
     expect(openCode.requests).not.toContain("POST /api/session");

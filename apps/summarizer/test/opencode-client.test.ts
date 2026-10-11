@@ -60,6 +60,7 @@ it.effect(
         const client = yield* OpenCode;
         expect(client.model).toEqual({ providerID: "provider", id: "model", variant: "max" });
         yield* client.commands(["summarize"]);
+        yield* client.plugins(["summarizer-extraction"]);
         expect(yield* client.run(attempt, 1000, false)).toEqual({
           sessionID: "ses_one",
           type: "succeeded",
@@ -68,6 +69,7 @@ it.effect(
       });
       yield* withFake(program, fake);
       expect(fake.requests).toContain("GET /api/agent?location%5Bdirectory%5D=%2Fworkspace");
+      expect(fake.requests).toContain("GET /api/plugin?location%5Bdirectory%5D=%2Fworkspace");
       expect(fake.requests).toContain("POST /api/session/ses_one/command");
       expect(fake.requests.indexOf("GET /api/event")).toBeLessThan(
         fake.requests.indexOf("POST /api/session/ses_one/command"),

@@ -34,6 +34,7 @@ interface FakeOptions {
   readonly fault?:
     | "agent"
     | "commands"
+    | "plugins"
     | "create"
     | "event"
     | "command"
@@ -52,6 +53,9 @@ interface FakeOptions {
   readonly agentModel?: boolean;
   readonly noAgent?: boolean;
   readonly hangAgent?: boolean;
+  /** Plugin list reads that return no plugins, as a freshly started server does. */
+  readonly pluginsLoading?: number;
+  readonly hangPlugins?: boolean;
   readonly hangCreate?: boolean;
   readonly hangCommand?: boolean;
   readonly holdTerminal?: boolean;
@@ -73,8 +77,10 @@ interface FakeOptions {
   readonly exports?: Readonly<Record<string, object>>;
 }
 
-const hungCreation = (config: FakeOptions, method: string, path: string) =>
-  config.hangCreate && method === "POST" && path === "/api/session";
+const hung = (config: FakeOptions, method: string, path: string) =>
+  (config.hangCreate && method === "POST" && path === "/api/session") ||
+  (config.hangAgent && path === "/api/agent") ||
+  (config.hangPlugins && path === "/api/plugin");
 
 class FakeServer {
   readonly requests: string[] = [];
@@ -84,6 +90,7 @@ class FakeServer {
   }
   private controller: ReadableStreamDefaultController<Uint8Array> | undefined;
   private readonly marked = new Map<string, Schema.JsonObject>();
+  private pluginReads = 0;
   constructor(private readonly config: FakeOptions) {}
 
   private answer(
@@ -205,6 +212,26 @@ class FakeServer {
     });
   }
 
+  private plugins(request: HttpClientRequest.HttpClientRequest, url: URL) {
+    if (url.searchParams.get("location[directory]") !== "/workspace")
+      throw new Error("Wrong plugin location");
+    const loading = ++this.pluginReads <= (this.config.pluginsLoading ?? 0);
+    const active = { features: { server: true }, state: { status: "active" } };
+    return this.answer(request, "plugins", {
+      location: { directory: "/workspace" },
+      data: loading
+        ? []
+        : [
+            { id: "opencode.config.policy", source: { type: "builtin" }, ...active },
+            {
+              id: "summarizer-extraction",
+              source: { type: "local", path: "/workspace/.opencode/plugins/summarizer-extraction" },
+              ...active,
+            },
+          ],
+    });
+  }
+
   private message(request: HttpClientRequest.HttpClientRequest, url: URL) {
     if (
       url.searchParams.get("type") !== "assistant" ||
@@ -281,8 +308,7 @@ class FakeServer {
       throw new Error("Unauthenticated OpenCode request");
     if (request.body instanceof HttpBody.Uint8Array && request.body.text)
       this.bodies.push(request.body.text);
-    if (url.pathname === "/api/agent" && this.config.hangAgent) return Effect.never;
-    if (hungCreation(this.config, request.method, url.pathname)) return Effect.never;
+    if (hung(this.config, request.method, url.pathname)) return Effect.never;
     if (url.pathname.endsWith("/command") && this.config.hangCommand) return Effect.never;
     if (url.pathname === "/api/session" && this.config.slowList && request.method === "GET")
       return Effect.sync(() => this.sessions(request, url)).pipe(Effect.delay("12 seconds"));
@@ -305,6 +331,7 @@ class FakeServer {
           data: [{ name: "summarize" }, { name: "other" }],
         });
       }
+      if (url.pathname === "/api/plugin") return this.plugins(request, url);
       if (url.pathname === "/api/session") return this.sessions(request, url);
       if (url.pathname === "/api/event") return this.event(request);
       if (url.pathname.startsWith("/api/experimental/session/")) return this.export(request, url);
