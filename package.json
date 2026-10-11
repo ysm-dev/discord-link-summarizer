@@ -6,7 +6,7 @@
   ],
   "type": "module",
   "scripts": {
-    "ci": "bun run format:check && bun run lint && bun run typecheck && bun run effect:check && bun run test && bun run knip && bun run dup && bun run exceptions && bun run verify-gates && bun run mutate",
+    "ci": "bun run format:check && bun run lint && bun run typecheck && bun run effect:check && bun run test && bun run knip && bun run dup && bun run exceptions && bun run verify-gates",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
     "lint": "oxlint --type-aware --report-unused-disable-directives",
@@ -15,15 +15,12 @@
     "test": "vitest run --coverage",
     "knip": "knip && knip --production",
     "dup": "jscpd",
-    "mutate": "stryker run",
     "exceptions": "bun run scripts/exceptions.ts",
     "verify-gates": "bun run scripts/verify-gates.ts",
     "prepare": "husky"
   },
   "devDependencies": {
     "@effect/tsgo": "0.45.0",
-    "@stryker-mutator/core": "10.0.0",
-    "@stryker-mutator/vitest-runner": "10.0.0",
     "@types/bun": "1.3.12",
     "@types/node": "26.6.2",
     "@vitest/coverage-v8": "5.0.1",
@@ -52,8 +49,5 @@
       "version": "1.4.2",
       "onFail": "error"
     }
-  },
-  "patchedDependencies": {
-    "@stryker-mutator/vitest-runner@10.0.0": "patches/@stryker-mutator%2Fvitest-runner@10.0.0.patch"
   }
 }

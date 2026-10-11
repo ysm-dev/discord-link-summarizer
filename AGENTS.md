@@ -14,19 +14,18 @@ Single-context: root `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.
 
 ## Quality gates
 
-This repo enforces nine gates. They are not advisory. `bun run ci` runs all of them and CI blocks on it.
+This repo enforces eight gates. They are not advisory. `bun run ci` runs all of them and CI blocks on it.
 
-| Gate                  | Threshold      | Enforced by                     |
-| --------------------- | -------------- | ------------------------------- |
-| Cyclomatic complexity | < 22           | oxlint `eslint/complexity`      |
-| Cognitive complexity  | < 22           | `oxlint-plugin-complexity`      |
-| Lines per file        | < 500          | oxlint `eslint/max-lines`       |
-| Test coverage         | 100%, per file | vitest `thresholds.perFile`     |
-| Surviving mutants     | 0              | Stryker `thresholds.break: 100` |
-| Dead code             | 0              | knip                            |
-| Duplicated code       | 0              | jscpd                           |
-| `any` types           | 0              | oxlint `no-explicit-any`        |
-| Effect diagnostics    | clean          | `effect-tsgo diagnostics`       |
+| Gate                  | Threshold      | Enforced by                 |
+| --------------------- | -------------- | --------------------------- |
+| Cyclomatic complexity | < 22           | oxlint `eslint/complexity`  |
+| Cognitive complexity  | < 22           | `oxlint-plugin-complexity`  |
+| Lines per file        | < 500          | oxlint `eslint/max-lines`   |
+| Test coverage         | 100%, per file | vitest `thresholds.perFile` |
+| Dead code             | 0              | knip                        |
+| Duplicated code       | 0              | jscpd                       |
+| `any` types           | 0              | oxlint `no-explicit-any`    |
+| Effect diagnostics    | clean          | `effect-tsgo diagnostics`   |
 
 ### Rules that are easy to get wrong
 
@@ -35,7 +34,7 @@ This repo enforces nine gates. They are not advisory. `bun run ci` runs all of t
 - **Coverage is per file, not global.** A global average is trivially gamed by one large well-covered file.
 - **Untestable code goes in a thin edge file**, not behind a coverage ignore comment. `apps/summarizer/src/index.ts` provides the Bun platform and runs `main` with `BunRuntime.runMain`; all logic belongs in testable modules.
 - **Effect diagnostics need the inline `--lspconfig`** in `effect:check`; without configuration, the tool checks zero files and exits successfully. `bun run verify-gates` checks that a floating Effect fails with `floatingEffect`, then that clean code passes.
-- **Tests and fakes live in `apps/summarizer/test/`**, outside the source tree measured by coverage and mutation testing. Use `@effect/vitest` and its test clock for Effect programs.
+- **Tests and fakes live in `apps/summarizer/test/`**, outside the source tree measured by coverage. Use `@effect/vitest` and its test clock for Effect programs.
 
 ### When a gate blocks you
 

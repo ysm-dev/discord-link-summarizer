@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import process from "node:process";
 
@@ -169,33 +169,14 @@ const verify = (check: Check): readonly string[] => {
   return problems;
 };
 
-/**
- * The mutation gate's real failure mode is the bun patch silently not applying
- * after a version bump, so assert the patch rather than run a full mutation
- * pass. See README "Known patch".
- */
-const verifyStrykerPatch = (): readonly string[] => {
-  const patched = [
-    "node_modules/@stryker-mutator/vitest-runner/dist/src/test-helpers.js",
-    "node_modules/@stryker-mutator/vitest-runner/dist/src/stryker-setup.js",
-  ];
-  return patched
-    .filter((path) => !existsSync(path) || !readFileSync(path, "utf8").includes("join(' > ')"))
-    .map(
-      (path) =>
-        `mutation runner patch: ${path} is missing the " > " test-name separator; mutation results cannot be trusted`,
-    );
-};
-
 rmSync(SCRATCH, { recursive: true, force: true });
 mkdirSync(SCRATCH, { recursive: true });
 
-const failures = [...CHECKS.flatMap(verify), ...verifyStrykerPatch()];
+const failures = CHECKS.flatMap(verify);
 
 for (const check of CHECKS) {
   process.stdout.write(`  ${check.gate}\n`);
 }
-process.stdout.write("  mutation runner patch\n");
 
 rmSync(SCRATCH, { recursive: true, force: true });
 

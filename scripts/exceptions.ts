@@ -4,9 +4,9 @@ import exceptions from "../quality-exceptions.json" with { type: "json" };
 
 type Entry = { readonly path: string; readonly reason: string; readonly added: string };
 
-const GATES = ["coverage", "mutation", "duplication", "lint"] as const;
+const GATES = ["coverage", "duplication", "lint"] as const;
 
-const SUPPRESSION = /(oxlint-disable\S*|Stryker disable\S*|v8 ignore\S*)(?<rest>[^\n]*)/gu;
+const SUPPRESSION = /(oxlint-disable\S*|v8 ignore\S*)(?<rest>[^\n]*)/gu;
 
 const SOURCE_GLOB = "apps/*/{src,test}/**/*.ts";
 

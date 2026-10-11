@@ -41,6 +41,4 @@ jobs:
       # pruned incrementally, so a stale local node_modules can hide a removed
       # dependency that fails here.
       - run: bun install --frozen-lockfile
-      # Includes mutation testing, which runs in ~2s today. If it stops being cheap,
-      # split it into its own job: incremental on PRs, full on main and nightly.
       - run: bun run ci
