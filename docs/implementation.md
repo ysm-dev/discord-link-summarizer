@@ -2,8 +2,9 @@
 
 Specification: [#1](https://github.com/ysm-dev/discord-link-summarizer/issues/1).
 
-The specification and its linked tickets are the acceptance criteria. All work
-lands on one PR branch; ticket branches merge when their dependencies are present.
+The specification and its linked tickets record the original implementation plan;
+approved corrections below supersede conflicting requirements. The original plan
+uses one PR branch; ticket branches merge when their dependencies are present.
 
 ```text
 #2 Effect application and quality gates
@@ -27,11 +28,31 @@ crnd job are the human rollout steps listed in the specification.
 Implementation research exposed contradictions in the original protocol. The
 operator approved one-machine Run exclusion, durable channel-level progress in
 Discord, `Manage Threads`, and structured extraction tools instead of generic
-shell access. See ADR-0007 and ADR-0009.
+shell access. See ADR-0007 and ADR-0009. ADR-0010 subsequently replaced Discord
+journals with local SQLite Channel Records while retaining Discord Summaries.
 
-The operator requires shared session visibility and prohibits upstream changes.
-ADR-0008 preserves completed-session visibility using OpenCode's existing
-export/import API, without sharing active execution claims.
+The operator originally required shared session visibility without upstream
+changes. ADR-0008 used OpenCode's export/import API without sharing active execution
+claims; #9 above records that historical publication work.
+
+ADR-0012 supersedes only ADR-0008's publication and retention decision. Summaries
+remain only in Discord. The persistent isolated `OPENCODE_DB` and separately
+provisioned credentials remain, but every Attempt deletes its session after reading
+the model result, with cleanup on success, failure, timeout and interruption.
+Deletion failures warn; startup paginates and deletes all `metadata.summarizer`-owned
+terminal sessions and unfinished sessions whose last update is older than
+`summary_timeout` plus a two-minute grace, logging the leftover count after
+successful cleanup when nonzero.
+Normal Runs no longer discover the interactive service, export/import transcripts
+or emit transcript-publication or transcript-maintenance timing phases. `delete_sessions` is
+removed and rejected as an unknown config key. `progress.sqlite` is unchanged:
+IDs, statuses and digests, not Summary text. Losing failure-transcript debugging
+is intentional.
+
+After deployment, the approved one-time global purge uses the service API to
+select `metadata.summarizer` ownership and the exact translate `location.directory`
+matching `opencode.directory`; it never deletes by title alone or broadly by
+directory. Session deletion is not a forensic-erasure or file-size guarantee.
 
 The durable discovery and publication handoff is specified in
 [`recovery-protocol.md`](./recovery-protocol.md).

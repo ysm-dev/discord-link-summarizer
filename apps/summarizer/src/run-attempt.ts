@@ -14,7 +14,6 @@ import { allMessages, type DiscordApi } from "./discord-client.ts";
 import { DiscordThread, type DiscordMessage } from "./discord-schema.ts";
 import { linkFromPost, linkPostState, threadTitle } from "./link-post.ts";
 import type { OpenCodeAttempt, OpenCodeError, OpenCodeResult } from "./opencode-client.ts";
-import type { PublicationResult } from "./session-publication.ts";
 import { splitSummary } from "./summary.ts";
 import { measured } from "./performance.ts";
 
@@ -146,11 +145,7 @@ type Client = {
   readonly run: (
     attempt: OpenCodeAttempt,
     timeout: number,
-    deleteSession: boolean,
   ) => Effect.Effect<OpenCodeResult, OpenCodeError>;
-};
-type Publisher = {
-  readonly publish: (id: string, deleteSessions: boolean) => Effect.Effect<PublicationResult>;
 };
 class AttemptFailure extends Data.TaggedError("AttemptFailure")<{ readonly message: string }> {}
 type AttemptContext = {
@@ -276,7 +271,6 @@ const finishFailure = (
 const attempt = (
   context: AttemptContext,
   openCode: Client,
-  publication: Publisher,
   settings: Settings,
   runID: string,
   link: string,
@@ -302,7 +296,6 @@ const attempt = (
             command: item.channel.command,
           },
           Duration.toMillis(settings.summaryTimeout),
-          settings.deleteSessions,
         )
         .pipe(Effect.timeoutOption(Duration.toMillis(settings.summaryTimeout)), (effect) =>
           measured("model", effect),
@@ -341,21 +334,7 @@ const attempt = (
         yield* rename(api, thread, name);
         yield* verifyCommitted(api, item.channel.id, item.id, bot, ready);
         return { journal: yield* journalStatus(ready, { id: item.id, state: "terminal" }) };
-      }).pipe(
-        (effect) => measured("discord-publication", effect),
-        Effect.tap(() =>
-          measured(
-            "transcript-publication",
-            publication.publish(result.sessionID, settings.deleteSessions),
-          ).pipe(
-            Effect.flatMap((published) =>
-              published.type === "deferred"
-                ? Effect.logWarning(`Publication deferred ${result.sessionID}: ${published.reason}`)
-                : Effect.void,
-            ),
-          ),
-        ),
-      );
+      }).pipe((effect) => measured("discord-publication", effect));
     }).pipe(Effect.onError(() => interrupted(api, thread, note, value)));
   });
 
@@ -363,7 +342,6 @@ const attempt = (
 export const workOn = (
   api: DiscordApi,
   openCode: Client,
-  publication: Publisher,
   bot: string,
   settings: Settings,
   initial: Journal,
@@ -425,7 +403,6 @@ export const workOn = (
     return yield* attempt(
       context,
       openCode,
-      publication,
       settings,
       runID,
       link,

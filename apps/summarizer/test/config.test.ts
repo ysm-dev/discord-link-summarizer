@@ -26,7 +26,6 @@ it.effect("decodes defaults, channel overrides, timezone offsets and attempt cap
     expect(Duration.toMillis(defaults.runBudget)).toBe(1200000);
     expect(defaults.retryWaits.map(Duration.toMillis)).toEqual([600000, 3600000]);
     expect(defaults.maxAttempts).toBe(3);
-    expect(defaults.deleteSessions).toBe(false);
     expect(defaults.channels).toEqual([
       { id: "123", label: "Feed", since: defaults.since, command: "summarize" },
     ]);
@@ -36,7 +35,7 @@ it.effect("decodes defaults, channel overrides, timezone offsets and attempt cap
         .replace("~/translate", "/srv/translate")
         .replace(
           "channels:",
-          `command: short\nhorizon: 2 days\nconcurrency: 2\nsummary_timeout: 5 minutes\nrun_budget: 1 hour\nretry_waits: []\ndelete_sessions: true\nchannels:`,
+          `command: short\nhorizon: 2 days\nconcurrency: 2\nsummary_timeout: 5 minutes\nrun_budget: 1 hour\nretry_waits: []\nchannels:`,
         )
         .replace(
           "    label: Feed",
@@ -52,7 +51,6 @@ it.effect("decodes defaults, channel overrides, timezone offsets and attempt cap
     expect(Duration.toMillis(override.runBudget)).toBe(3600000);
     expect(override.retryWaits).toEqual([]);
     expect(override.maxAttempts).toBe(1);
-    expect(override.deleteSessions).toBe(true);
     expect(override.channels[0]?.command).toBe("long");
     expect(DateTime.toEpochMillis(override.channels[0]!.since)).toBe(
       Date.parse("2026-09-25T01:00:00Z"),
@@ -78,6 +76,8 @@ it.effect(
         minimal.replace("channels:", "concurrency: 0\nchannels:"),
         minimal.replace("channels:", "concurrency: 1.5\nchannels:"),
         minimal + "state_channel_id: '999'\n",
+        minimal + "delete_sessions: true\n",
+        minimal + "delete_sessions: false\n",
         minimal.replace("id: '123'", "id: 'x123'"),
         minimal.replace("id: '123'", "id: '123x'"),
         minimal.replace("id: '123'", "id: 'abc'"),

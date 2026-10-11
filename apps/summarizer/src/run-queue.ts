@@ -5,7 +5,6 @@ import { fail, readJournal, settleRecord, type Journal } from "./channel-record.
 import type { DiscordApi } from "./discord-client.ts";
 import { OpenCode } from "./opencode-client.ts";
 import { workOn } from "./run-attempt.ts";
-import { SessionPublication } from "./session-publication.ts";
 
 const interval = 5_000;
 type Entry = ReturnType<typeof dueJournalIds>[number];
@@ -111,7 +110,6 @@ export const runQueue = (
 ) =>
   Effect.gen(function* () {
     const client = yield* OpenCode;
-    const publication = yield* SessionPublication;
     const runID = crypto.randomUUID();
     const queue = dueJournalIds([...journals.values()]);
     let admitted = queue.length === 0;
@@ -120,7 +118,6 @@ export const runQueue = (
       return workOn(
         api,
         client,
-        publication,
         bot,
         settings,
         journals.get(channelId)!,

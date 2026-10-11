@@ -26,7 +26,7 @@ Cross-machine writers and non-cooperating programs are outside this contract.
 Channel Records live in `~/.local/state/discord-link-summarizer/progress.sqlite`.
 The first real Run creates the private directory and database automatically.
 There is no state channel, state-channel ID or bookkeeping thread. The database
-is separate from the private OpenCode transcript database and is bound to the
+is separate from the private OpenCode execution database and is bound to the
 dedicated bot identity. Schema, ownership and malformed-record failures stop the
 Run before Discord mutations. Every configured readable channel's record is
 decoded during preflight. Dry-run opens existing progress read-only, never
@@ -49,7 +49,9 @@ journal records every eligible Link Post ID on each page. A Link Post may be
 pending, ready for commit, or terminal. Each change reads the latest channel
 state and commits it in one SQLite transaction. Replayed pages deduplicate IDs
 without replacing existing statuses; concurrent Attempts preserve each other's
-updates. Records and manifests have no Discord message-size limit.
+updates. Records and manifests have no Discord message-size limit. `progress.sqlite`
+is unchanged by transcript removal: it stores IDs, statuses and digests, not
+Summary text.
 
 Channel metadata and individual journal entries are stored separately in SQLite.
 An Attempt updates only its own entry; changing a discovery cursor does not
@@ -133,7 +135,7 @@ With `--watch`, full recovery runs once at startup. Subsequent discovery cycles
 check for newer messages with a five-second delay between cycles, draining
 unfinished page ranges without that delay. They retain the machine lock, SQLite
 connection and private OpenCode server while bounded Attempts run concurrently.
-Recent-Horizon rescans, archived adoption and deferred transcript sweeps repeat
+Recent-Horizon rescans, archived adoption and private session cleanup repeat
 on the next Run. Retry deadlines are cached only for the current Run; after a
 restart they are reconstructed from the durable Attempt notes. Infrastructure
 failures end the Run rather than retrying every five seconds.
@@ -170,12 +172,29 @@ thread before every part. Only matching ordinary bot messages reconcile an
 uncertain write. Discord HTTP headers and response bodies each have a
 15-second timeout; uncertain writes are never automatically replayed.
 
-Transcript publication follows the durable Discord outcome, so a slow interactive
-OpenCode service does not delay delivery of an already-generated Summary. The
-bounded pending-transcript sweep runs concurrently with current work, is joined
-before Run cleanup, and reuses the private session sweep's listing when it is
-still current. Publication remains eventual and transcripts remain private until
-their target import is verified.
+## OpenCode session cleanup
+
+[ADR-0012](adr/0012-discord-only-summaries.md) keeps Summaries only in Discord.
+The persistent isolated `OPENCODE_DB` remains for independently provisioned
+credentials and active execution, not transcript retention. Each Attempt deletes
+its session after reading the model result; cleanup also runs on failure, timeout
+and interruption. Failed deletion logs a warning without changing the Attempt's
+result. Failed Attempts intentionally lose transcript debugging.
+
+At the next startup, a paginated private-session sweep deletes all owned terminal
+sessions and unfinished sessions whose last update is older than `summary_timeout`
+plus a two-minute grace. `metadata.summarizer` ownership is required; unrelated
+sessions are untouched. Successful cleanup logs the count of leftovers when
+nonzero. Normal Runs perform no interactive-service discovery, transcript export,
+import or publication, and emit no transcript-publication or transcript-maintenance
+timing phases. Remove `delete_sessions` from old configs; unknown keys reject it.
+
+After deployment, the approved one-time purge of existing global sessions uses
+the interactive service API, not the private startup sweep. Paginate and select
+only `metadata.summarizer`-owned sessions at the exact translate
+`location.directory` matching `opencode.directory`, then delete those IDs through
+the API. Do not use title-only selection or broad directory/database deletion.
+Session deletion does not promise forensic erasure or a smaller database file.
 
 ## Explicit boundaries
 

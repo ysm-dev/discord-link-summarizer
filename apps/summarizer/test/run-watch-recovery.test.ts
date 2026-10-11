@@ -101,11 +101,7 @@ it.effect("watch uses a failure response's timestamp if its edit timestamp is ab
     yield* TestClock.adjust("11999 millis");
     expect(openCode.sessionsCreated).toBe(1);
     yield* TestClock.adjust(1);
-    yield* waitFor(
-      () =>
-        openCode.requests.filter((request) => request === "POST /api/session/ses_one/command")
-          .length === 2,
-    );
+    yield* waitFor(() => openCode.commandsStarted === 2);
     openCode.finish();
     yield* TestClock.adjust("4 seconds");
     expect(yield* Fiber.join(fiber)).toBe(0);

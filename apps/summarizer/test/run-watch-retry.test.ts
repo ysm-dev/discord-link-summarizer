@@ -68,11 +68,7 @@ it.effect("a failed Attempt retries on its deadline within the same Run", () =>
       ),
     ).toHaveLength(reads);
     yield* TestClock.adjust(1);
-    yield* waitFor(
-      () =>
-        openCode.requests.filter((request) => request === "POST /api/session/ses_one/command")
-          .length === 2,
-    );
+    yield* waitFor(() => openCode.commandsStarted === 2);
     openCode.finish();
     yield* waitFor(
       () =>

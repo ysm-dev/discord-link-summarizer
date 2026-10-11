@@ -1,7 +1,11 @@
 import { Context, Data, Deferred, Effect, Layer, Schedule, Schema, Stream } from "effect";
 import { Sse } from "effect/unstable/encoding";
-import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
-import { boundedJson, TransferSizeError } from "./transfer-http.ts";
+import {
+  HttpClient,
+  HttpClientError,
+  HttpClientRequest,
+  HttpClientResponse,
+} from "effect/unstable/http";
 
 export type OpenCodeModel = {
   readonly providerID: string;
@@ -26,24 +30,17 @@ export interface OpenCodeAttempt {
   readonly command: string;
 }
 
-type OpenCodeOutcome =
+export type OpenCodeResult =
   | { readonly type: "succeeded"; readonly text: string }
   | { readonly type: "failed"; readonly reason: string }
   | { readonly type: "interrupted" };
-export type OpenCodeResult = OpenCodeOutcome & { readonly sessionID: string };
 
-export const canonicalJson = (value: Schema.Json): string =>
+const canonicalJson = (value: Schema.Json): string =>
   JSON.stringify(value, (_key, item: Schema.Json) =>
     item && !Array.isArray(item) && typeof item === "object"
       ? Object.fromEntries(Object.entries(item).toSorted(([a], [b]) => a.localeCompare(b)))
       : item,
   );
-
-export const Transfer = Schema.Struct({
-  info: Schema.JsonObject,
-  messages: Schema.Array(Schema.JsonObject),
-});
-export type Transfer = typeof Transfer.Type;
 
 const fail = (reason: string) => new OpenCodeError({ reason });
 
@@ -58,18 +55,11 @@ const Session = Schema.Struct({
           channelID: Schema.String,
           messageID: Schema.String,
           runID: Schema.String,
-          published: Schema.optional(Schema.Literal(true)),
         }),
       ),
     }),
   ),
 });
-type Terminal = { id: string; created: number };
-const collectTerminal = (entries: Terminal[], session: typeof Session.Type) => {
-  if (session.metadata?.summarizer && session.outcome && !session.metadata.summarizer.published)
-    entries.push({ id: session.id, created: session.time.created });
-};
-
 /** A location-bound v2 client. Construct once per private server; supply a scoped HTTP client. */
 export class OpenCode extends Context.Service<
   OpenCode,
@@ -78,20 +68,13 @@ export class OpenCode extends Context.Service<
     readonly commands: (names: ReadonlyArray<string>) => Effect.Effect<void, OpenCodeError>;
     /** Waits for each plugin to become active. OpenCode only logs a plugin that fails to load. */
     readonly plugins: (ids: ReadonlyArray<string>) => Effect.Effect<void, OpenCodeError>;
-    /** Returns the created session ID for direct publication. The command timeout begins after creation and SSE readiness;
+    /** Deletes the session on every exit. The command timeout begins after creation and SSE readiness;
      * callers needing a whole-Attempt deadline must interrupt the run effect at that deadline (not abandon its fiber). */
     readonly run: (
       attempt: OpenCodeAttempt,
       timeout: number,
-      deleteSession: boolean,
     ) => Effect.Effect<OpenCodeResult, OpenCodeError>;
-    readonly sweep: (
-      olderThan: number,
-      deleteFinished: boolean,
-    ) => Effect.Effect<number, OpenCodeError>;
-    readonly terminalSessions: Effect.Effect<readonly string[], OpenCodeError>;
-    readonly exportSession: (id: string) => Effect.Effect<Transfer, OpenCodeError>;
-    readonly markPublished: (id: string, source: Transfer) => Effect.Effect<void, OpenCodeError>;
+    readonly sweep: (olderThan: number) => Effect.Effect<number, OpenCodeError>;
   }
 >()(import.meta.url) {
   static layer(options: OpenCodeOptions) {
@@ -119,14 +102,6 @@ export class OpenCode extends Context.Service<
           ),
         });
         const SessionResponse = Schema.Struct({ data: Session });
-        let swept: Terminal[] | undefined;
-        const PublishedInfo = Schema.Struct({
-          id: Schema.String,
-          outcome: Schema.Literals(["succeeded", "failed", "interrupted"]),
-          time: Schema.JsonObject,
-          location: Schema.JsonObject,
-          metadata: Schema.JsonObject,
-        });
         const Sessions = Schema.Struct({
           data: Schema.Array(Session),
           cursor: Schema.Struct({ next: Schema.optional(Schema.NullOr(Schema.String)) }),
@@ -221,6 +196,13 @@ export class OpenCode extends Context.Service<
           );
         const remove = (id: string) =>
           http.del(`${options.url}/api/session/${encodeURIComponent(id)}`).pipe(
+            Effect.catchIf(
+              (error) =>
+                HttpClientError.isHttpClientError(error) &&
+                error.reason instanceof HttpClientError.StatusCodeError &&
+                error.reason.response.status === 404,
+              () => Effect.void,
+            ),
             Effect.asVoid,
             Effect.mapError(() => fail(`Cannot delete OpenCode session ${id}`)),
           );
@@ -237,7 +219,7 @@ export class OpenCode extends Context.Service<
           request(`/api/session/${encodeURIComponent(id)}`, SessionResponse);
         const finalText = Effect.fnUntraced(function* (
           id: string,
-        ): Effect.fn.Return<OpenCodeOutcome, OpenCodeError> {
+        ): Effect.fn.Return<OpenCodeResult, OpenCodeError> {
           const messages = yield* http
             .get(`${options.url}/api/session/${encodeURIComponent(id)}/message`, {
               urlParams: { type: "assistant", order: "desc", limit: "1" },
@@ -261,7 +243,7 @@ export class OpenCode extends Context.Service<
         const result = Effect.fnUntraced(function* (
           id: string,
           eventError?: string,
-        ): Effect.fn.Return<OpenCodeOutcome, OpenCodeError> {
+        ): Effect.fn.Return<OpenCodeResult, OpenCodeError> {
           const session = yield* outcome(id);
           if (session.data.outcome === "succeeded") return yield* finalText(id);
           if (session.data.outcome === "interrupted") return { type: "interrupted" };
@@ -270,12 +252,7 @@ export class OpenCode extends Context.Service<
           return yield* fail("OpenCode event stream ended without a terminal outcome");
         });
 
-        const run = Effect.fnUntraced(function* (
-          attempt: OpenCodeAttempt,
-          timeout: number,
-          deleteSession: boolean,
-        ) {
-          swept = undefined;
+        const run = Effect.fnUntraced(function* (attempt: OpenCodeAttempt, timeout: number) {
           const body = {
             title: `🔗 ${attempt.label} · ${attempt.link}`,
             agent: options.agent,
@@ -289,11 +266,20 @@ export class OpenCode extends Context.Service<
               },
             },
           };
-          const created = yield* HttpClientRequest.post(`${options.url}/api/session`).pipe(
-            HttpClientRequest.bodyJsonUnsafe(body),
-            http.execute,
-            Effect.flatMap(HttpClientResponse.schemaBodyJson(SessionResponse)),
-            Effect.mapError(() => fail("Cannot create OpenCode session")),
+          const created = yield* Effect.acquireRelease(
+            HttpClientRequest.post(`${options.url}/api/session`).pipe(
+              HttpClientRequest.bodyJsonUnsafe(body),
+              http.execute,
+              Effect.flatMap(HttpClientResponse.schemaBodyJson(SessionResponse)),
+              Effect.timeout("15 seconds"),
+              Effect.mapError(() => fail("Cannot create OpenCode session")),
+            ),
+            ({ data }) =>
+              remove(data.id).pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning(`${error.reason}; cleanup will retry next Run`),
+                ),
+              ),
           );
           const id = created.data.id;
           return yield* Effect.gen(function* () {
@@ -359,15 +345,13 @@ export class OpenCode extends Context.Service<
                 orElse: () => interrupt(id).pipe(Effect.as("timeout")),
               }),
             );
-            if (terminal === "timeout")
-              return { sessionID: id, type: "failed", reason: "timeout" } as const;
-            return { ...(yield* result(id, terminal)), sessionID: id };
+            if (terminal === "timeout") return { type: "failed", reason: "timeout" } as const;
+            return yield* result(id, terminal);
           }).pipe(
             Effect.scoped,
             Effect.onError(() => interrupt(id).pipe(Effect.ignore)),
-            Effect.ensuring(deleteSession ? remove(id).pipe(Effect.ignore) : Effect.void),
           );
-        });
+        }, Effect.scoped);
 
         const list = Effect.fnUntraced(function* (
           visit: (session: typeof Session.Type) => Effect.Effect<void, OpenCodeError>,
@@ -397,88 +381,14 @@ export class OpenCode extends Context.Service<
             cursor = next;
           }
         });
-        const sweep = Effect.fnUntraced(function* (olderThan: number, deleteFinished: boolean) {
-          swept = undefined;
-          const entries: Terminal[] = [];
+        const sweep = Effect.fnUntraced(function* (olderThan: number) {
           let removed = 0;
           yield* list((session) =>
-            session.metadata?.summarizer &&
-            ((deleteFinished && session.outcome) ||
-              (!session.outcome && session.time.updated < olderThan))
+            session.metadata?.summarizer && (session.outcome || session.time.updated < olderThan)
               ? remove(session.id).pipe(Effect.tap(() => Effect.sync(() => removed++)))
-              : Effect.sync(() => collectTerminal(entries, session)),
+              : Effect.void,
           );
-          swept = entries;
           return removed;
-        });
-        const terminalSessions = Effect.gen(function* () {
-          const entries = swept ?? [];
-          if (!swept)
-            yield* list((session) => Effect.sync(() => collectTerminal(entries, session)));
-          swept = undefined;
-          return entries
-            .toSorted((a, b) => a.created - b.created || a.id.localeCompare(b.id))
-            .map((item) => item.id);
-        }).pipe(
-          Effect.timeoutOrElse({
-            duration: "30 seconds",
-            orElse: () => Effect.fail(fail("OpenCode session listing timed out")),
-          }),
-        );
-        const exportSession = (id: string) =>
-          http
-            .get(`${options.url}/api/experimental/session/${encodeURIComponent(id)}/export`, {
-              urlParams: { sanitize: "false" },
-            })
-            .pipe(
-              Effect.flatMap((response) =>
-                boundedJson(response, Schema.Struct({ data: Transfer })),
-              ),
-              Effect.map((response) => response.data),
-              Effect.timeout("15 seconds"),
-              Effect.mapError((error) =>
-                fail(
-                  error instanceof TransferSizeError
-                    ? error.reason
-                    : `Cannot export OpenCode session ${id}`,
-                ),
-              ),
-            );
-        const markPublished = Effect.fnUntraced(function* (id: string, source: Transfer) {
-          swept = undefined;
-          const info = yield* Schema.decodeUnknownEffect(PublishedInfo)(source.info).pipe(
-            Effect.mapError(() => fail(`Cannot mark invalid OpenCode session ${id}`)),
-          );
-          const summarizer = yield* Schema.decodeUnknownEffect(Schema.JsonObject)(
-            info.metadata["summarizer"],
-          ).pipe(Effect.mapError(() => fail(`Cannot mark unowned OpenCode session ${id}`)));
-          const metadata = { ...info.metadata, summarizer: { ...summarizer, published: true } };
-          const markError = () => fail(`Cannot mark OpenCode session ${id} as published`);
-          const confirm = () =>
-            http.get(`${options.url}/api/session/${encodeURIComponent(id)}`).pipe(
-              Effect.flatMap(
-                HttpClientResponse.schemaBodyJson(Schema.Struct({ data: PublishedInfo })),
-              ),
-              Effect.filterOrFail(
-                ({ data }) =>
-                  data.id === id &&
-                  data.location["directory"] === info.location["directory"] &&
-                  data.outcome === info.outcome &&
-                  data.time["idle"] === info.time["idle"] &&
-                  canonicalJson(data.metadata) === canonicalJson(metadata),
-                markError,
-              ),
-              Effect.asVoid,
-            );
-          yield* HttpClientRequest.patch(
-            `${options.url}/api/session/${encodeURIComponent(id)}`,
-          ).pipe(
-            HttpClientRequest.bodyJsonUnsafe({ metadata }),
-            http.execute,
-            Effect.asVoid,
-            Effect.catch(() => confirm()),
-            Effect.mapError(markError),
-          );
         });
         return OpenCode.of({
           model,
@@ -486,9 +396,6 @@ export class OpenCode extends Context.Service<
           plugins,
           run,
           sweep,
-          terminalSessions,
-          exportSession,
-          markPublished,
         });
       }),
     );

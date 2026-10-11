@@ -18,7 +18,6 @@ const perform = (
   workOn(
     api,
     { run: () => outcome },
-    { publish: () => Effect.succeed({ type: "published" as const, id: "ses_one" }) },
     "bot",
     settings,
     journal,
@@ -167,7 +166,7 @@ it.effect("a lost rename reply requires the expected archived thread and title",
         settings,
         journal,
         post.id,
-        Effect.succeed({ type: "succeeded", text: "Summary", sessionID: "ses_one" }),
+        Effect.succeed({ type: "succeeded", text: "Summary" }),
       );
       expect(yield* Effect.flip(result)).toMatchObject({ kind: "outage" });
       expect(renamed).toBe(true);

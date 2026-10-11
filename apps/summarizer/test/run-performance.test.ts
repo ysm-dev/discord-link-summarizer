@@ -1,5 +1,5 @@
 import { expect, it } from "./progress-fixture.ts";
-import { Deferred, Effect, Fiber } from "effect";
+import { Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
 import { at, captureLogs, config, seedJournal, setup, waitForFault } from "./run-fixture.ts";
 import { readJournal } from "../src/channel-record.ts";
@@ -108,49 +108,6 @@ it.effect(
     }),
 );
 
-it.effect(
-  "commits the summary and durable terminal status before waiting for transcript publication",
-  () =>
-    Effect.gen(function* () {
-      const { discord } = yield* setup();
-      const post = discord.addMessage("10", "https://example.test/publication", at - 100);
-      const journal = yield* seedJournal(discord, post);
-      const api = yield* fakeApi(discord);
-      const settings = yield* decodeConfig(config, "/home/test");
-      const entered = yield* Deferred.make<void>();
-      const release = yield* Deferred.make<void>();
-      const fiber = yield* Effect.forkChild(
-        workOn(
-          api,
-          {
-            run: () =>
-              Effect.succeed({ type: "succeeded", text: "Complete summary", sessionID: "session" }),
-          },
-          {
-            publish: (id) =>
-              Deferred.succeed(entered, undefined).pipe(
-                Effect.andThen(Deferred.await(release)),
-                Effect.as({ type: "published", id } as const),
-              ),
-          },
-          "bot",
-          settings,
-          journal,
-          { id: post.id, channel: settings.channels[0]! },
-          "run",
-        ),
-      );
-      yield* Deferred.await(entered);
-      expect(discord.threads.get(post.id)?.thread_metadata.archived).toBe(true);
-      expect(discord.messages.get(post.id)?.map((message) => message.content)).toEqual([
-        "Complete summary",
-      ]);
-      expect((yield* readJournal("10"))?.entries.get(post.id)?.state).toBe("terminal");
-      yield* Deferred.succeed(release, undefined);
-      yield* Fiber.join(fiber);
-    }),
-);
-
 it.effect("retains archive completion when server maintenance consumes the admission budget", () =>
   Effect.gen(function* () {
     const { discord, invoke, openCode } = yield* setup(
@@ -196,10 +153,8 @@ for (const [author, type] of [
                 ),
           },
           {
-            run: () =>
-              Effect.succeed({ type: "succeeded", text: "Same text", sessionID: "session" }),
+            run: () => Effect.succeed({ type: "succeeded", text: "Same text" }),
           },
-          { publish: (id) => Effect.succeed({ type: "published", id }) },
           "bot",
           settings,
           journal,
@@ -245,14 +200,7 @@ it.effect("emits the documented phase labels for one completed Run", () =>
       .map((line) => line.split(" ")[1]!)
       .toSorted((a, b) => a.localeCompare(b));
     expect(phases).toEqual(
-      [
-        "archive-discovery",
-        "discovery",
-        "discord-publication",
-        "model",
-        "transcript-maintenance",
-        "transcript-publication",
-      ]
+      ["archive-discovery", "discovery", "discord-publication", "model"]
         .map((phase) => `phase=${phase}`)
         .toSorted(),
     );

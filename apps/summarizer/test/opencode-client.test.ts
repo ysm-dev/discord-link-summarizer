@@ -1,7 +1,7 @@
 import { expect, it } from "@effect/vitest";
-import { Effect, Fiber, Schema } from "effect";
+import { Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
-import { OpenCode, Transfer } from "../src/opencode-client.ts";
+import { OpenCode } from "../src/opencode-client.ts";
 import { attempt, fakeOpenCode, session, withFake } from "./opencode-fake.ts";
 
 const timedFailure = (fake: ReturnType<typeof fakeOpenCode>, until: string, seconds: number) =>
@@ -10,7 +10,7 @@ const timedFailure = (fake: ReturnType<typeof fakeOpenCode>, until: string, seco
       Effect.flip(
         withFake(
           Effect.gen(function* () {
-            return yield* (yield* OpenCode).run(attempt, 1000, false);
+            return yield* (yield* OpenCode).run(attempt, 1000);
           }),
           fake,
         ),
@@ -20,36 +20,6 @@ const timedFailure = (fake: ReturnType<typeof fakeOpenCode>, until: string, seco
     yield* TestClock.adjust(`${seconds} seconds`);
     return yield* Fiber.join(fiber);
   });
-const malformed = (info: Schema.JsonObject) =>
-  Schema.decodeUnknownSync(Transfer)({ info, messages: [] });
-
-it.effect("validates publication metadata before updating a private session", () =>
-  Effect.gen(function* () {
-    const fake = fakeOpenCode();
-    const program = Effect.gen(function* () {
-      const client = yield* OpenCode;
-      for (const [info, reason] of [
-        [{ id: "ses_one", metadata: {} }, "Cannot mark invalid OpenCode session ses_one"],
-        [
-          {
-            id: "ses_one",
-            outcome: "succeeded",
-            time: { idle: 3 },
-            location: { directory: "/workspace" },
-            metadata: {},
-          },
-          "Cannot mark unowned OpenCode session ses_one",
-        ],
-      ] as const) {
-        expect((yield* Effect.flip(client.markPublished("ses_one", malformed(info)))).reason).toBe(
-          reason,
-        );
-      }
-    });
-    yield* withFake(program, fake);
-    expect(fake.requests).not.toContain("PATCH /api/session/ses_one");
-  }),
-);
 
 it.effect(
   "authenticates, copies the agent model, waits for SSE, runs a command and reads final text",
@@ -61,13 +31,13 @@ it.effect(
         expect(client.model).toEqual({ providerID: "provider", id: "model", variant: "max" });
         yield* client.commands(["summarize"]);
         yield* client.plugins(["summarizer-extraction"]);
-        expect(yield* client.run(attempt, 1000, false)).toEqual({
-          sessionID: "ses_one",
+        expect(yield* client.run(attempt, 1000)).toEqual({
           type: "succeeded",
           text: "안녕하세요",
         });
       });
       yield* withFake(program, fake);
+      expect(fake.retained.size).toBe(0);
       expect(fake.requests).toContain("GET /api/agent?location%5Bdirectory%5D=%2Fworkspace");
       expect(fake.requests).toContain("GET /api/plugin?location%5Bdirectory%5D=%2Fworkspace");
       expect(fake.requests).toContain("POST /api/session/ses_one/command");
@@ -101,7 +71,7 @@ it.effect("validates command names before creating a session", () =>
   }),
 );
 
-it.effect("paginates the sweep and deletes only owned stale or requested finished sessions", () =>
+it.effect("paginates the sweep and deletes only owned terminal or stale unfinished sessions", () =>
   Effect.gen(function* () {
     const fake = fakeOpenCode({
       pages: [
@@ -109,22 +79,33 @@ it.effect("paginates the sweep and deletes only owned stale or requested finishe
           session("ses_old"),
           session("ses_live", undefined, 900),
           session("ses_boundary", undefined, 500),
-          { ...session("ses_other"), metadata: {} },
+          { ...session("ses_other", "succeeded"), metadata: {} },
           { id: "ses_no_metadata", time: { created: 1, updated: 100 } },
         ],
-        [session("ses_done", "succeeded")],
+        [
+          session("ses_done", "succeeded", 900),
+          session("ses_failed", "failed", 900),
+          session("ses_interrupted", "interrupted", 900),
+        ],
       ],
     });
     const program = Effect.gen(function* () {
       const client = yield* OpenCode;
-      expect(yield* client.sweep(500, false)).toBe(1);
-      expect(yield* client.sweep(500, true)).toBe(2);
+      expect(yield* client.sweep(500)).toBe(4);
+      expect(yield* client.sweep(500)).toBe(0);
     });
     yield* withFake(program, fake);
     expect(fake.requests.filter((path) => path.startsWith("DELETE"))).toEqual([
       "DELETE /api/session/ses_old",
-      "DELETE /api/session/ses_old",
       "DELETE /api/session/ses_done",
+      "DELETE /api/session/ses_failed",
+      "DELETE /api/session/ses_interrupted",
+    ]);
+    expect([...fake.retained.keys()]).toEqual([
+      "ses_live",
+      "ses_boundary",
+      "ses_other",
+      "ses_no_metadata",
     ]);
   }),
 );
@@ -154,25 +135,25 @@ it.effect("reports terminal outcomes, abnormal finishes, and missing assistant t
       const fake = fakeOpenCode(scenario);
       const result = yield* withFake(
         Effect.gen(function* () {
-          return yield* (yield* OpenCode).run(attempt, 1000, false);
+          return yield* (yield* OpenCode).run(attempt, 1000);
         }),
         fake,
       );
-      expect(result).toEqual({ ...expected, sessionID: "ses_one" });
+      expect(result).toEqual(expected);
+      expect(fake.retained.size).toBe(0);
     }
   }),
 );
 
-it.effect("bounds and interrupts a stuck command, then optionally deletes its session", () =>
+it.effect("bounds and interrupts a stuck command, then deletes its session", () =>
   Effect.gen(function* () {
     for (const config of [{ hangCommand: true }, { noEvent: true }]) {
       const fake = fakeOpenCode(config);
       const program = Effect.gen(function* () {
-        const fiber = yield* Effect.forkChild((yield* OpenCode).run(attempt, 1000, true));
+        const fiber = yield* Effect.forkChild((yield* OpenCode).run(attempt, 1000));
         while (!fake.requests.some((path) => path.endsWith("/command"))) yield* Effect.yieldNow;
         yield* TestClock.adjust("2 seconds");
         expect(yield* Fiber.join(fiber)).toEqual({
-          sessionID: "ses_one",
           type: "failed",
           reason: "timeout",
         });
@@ -180,6 +161,7 @@ it.effect("bounds and interrupts a stuck command, then optionally deletes its se
       yield* withFake(program, fake);
       expect(fake.requests).toContain("POST /api/session/ses_one/interrupt?resume=false");
       expect(fake.requests).toContain("DELETE /api/session/ses_one");
+      expect(fake.retained.size).toBe(0);
     }
   }),
 );
@@ -188,31 +170,34 @@ it.effect("waits for a terminal execution event after Started", () =>
   Effect.gen(function* () {
     const fake = fakeOpenCode({ holdTerminal: true });
     const program = Effect.gen(function* () {
-      const fiber = yield* Effect.forkChild((yield* OpenCode).run(attempt, 1000, false));
+      const fiber = yield* Effect.forkChild((yield* OpenCode).run(attempt, 1000));
       while (!fake.requests.includes("POST /api/session/ses_one/command")) yield* Effect.yieldNow;
       yield* Effect.yieldNow;
       expect(fake.requests).not.toContain("GET /api/session/ses_one");
+      expect(fake.retained.has("ses_one")).toBe(true);
       yield* Effect.sync(fake.finish);
       expect(yield* Fiber.join(fiber)).toEqual({
-        sessionID: "ses_one",
         type: "succeeded",
         text: "안녕하세요",
       });
     });
     yield* withFake(program, fake);
+    expect(fake.retained.size).toBe(0);
   }),
 );
 
-it.effect("interrupts an attempt canceled by its parent", () =>
+it.effect("interrupts and deletes an attempt canceled by its parent", () =>
   Effect.gen(function* () {
     const fake = fakeOpenCode({ hangCommand: true });
     const program = Effect.gen(function* () {
-      const fiber = yield* Effect.forkChild((yield* OpenCode).run(attempt, 1000, false));
+      const fiber = yield* Effect.forkChild((yield* OpenCode).run(attempt, 1000));
       while (!fake.requests.some((path) => path.endsWith("/command"))) yield* Effect.yieldNow;
+      expect(fake.retained.has("ses_one")).toBe(true);
       yield* Fiber.interrupt(fiber);
     });
     yield* withFake(program, fake);
     expect(fake.requests).toContain("POST /api/session/ses_one/interrupt?resume=false");
+    expect(fake.retained.size).toBe(0);
   }),
 );
 
@@ -233,10 +218,11 @@ it.effect("fails closed on HTTP errors, SSE loss, or a nonterminal session", () 
         const client = yield* OpenCode;
         return config.fault === "commands"
           ? yield* client.commands(["summarize"])
-          : yield* client.run(attempt, 1000, false);
+          : yield* client.run(attempt, 1000);
       });
       const error = yield* Effect.flip(withFake(program, fake));
       expect(error.reason).toBeTruthy();
+      expect(fake.retained.size).toBe(0);
       if (config.fault === "command" || config.fault === "event" || "closeEvent" in config)
         expect(fake.requests).toContain("POST /api/session/ses_one/interrupt?resume=false");
     }
@@ -250,6 +236,7 @@ it.effect("bounds an SSE feed that never acknowledges subscription", () =>
       "OpenCode SSE connection timed out",
     );
     expect(fake.requests).not.toContain("POST /api/session/ses_one/command");
+    expect(fake.retained.size).toBe(0);
   }),
 );
 
@@ -262,10 +249,11 @@ it.effect("rejects malformed event envelopes and error data", () =>
     ]) {
       const fake = fakeOpenCode({ invalidEvent: event });
       const program = Effect.gen(function* () {
-        return yield* Effect.flip((yield* OpenCode).run(attempt, 1000, false));
+        return yield* Effect.flip((yield* OpenCode).run(attempt, 1000));
       });
       const failure = yield* withFake(program, fake);
       expect(failure.reason).toBe("OpenCode SSE disconnected");
+      expect(fake.retained.size).toBe(0);
     }
   }),
 );
@@ -304,12 +292,13 @@ it.effect("reports pagination loops, list and deletion failures", () =>
       const error = yield* Effect.flip(
         withFake(
           Effect.gen(function* () {
-            return yield* (yield* OpenCode).sweep(500, false);
+            return yield* (yield* OpenCode).sweep(500);
           }),
           fake,
         ),
       );
       expect(error.reason).toBeTruthy();
+      if (config.fault === "delete") expect([...fake.retained.keys()]).toEqual(["ses_one"]);
     }
   }),
 );
@@ -321,6 +310,7 @@ it.effect("propagates interrupt failures without leaving a command running", () 
       "Cannot interrupt OpenCode session ses_one",
     );
     expect(fake.requests).toContain("POST /api/session/ses_one/interrupt?resume=false");
+    expect(fake.retained.size).toBe(0);
   }),
 );
 
@@ -385,8 +375,8 @@ it.effect("rejects malformed v2 API payloads at their trust boundaries", () =>
         const client = yield* OpenCode;
         if (endpoint === "agent") return client.model;
         if (endpoint === "commands") return yield* client.commands(["summarize"]);
-        if (endpoint === "list") return yield* client.sweep(500, false);
-        return yield* client.run(attempt, 1000, false);
+        if (endpoint === "list") return yield* client.sweep(500);
+        return yield* client.run(attempt, 1000);
       });
       const fiber = yield* Effect.forkChild(Effect.flip(withFake(program, fake)));
       if (endpoint === "agent") yield* TestClock.adjust("12 seconds");

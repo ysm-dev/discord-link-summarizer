@@ -1,4 +1,4 @@
-import { Effect, Layer, Schema } from "effect";
+import { Effect, Layer } from "effect";
 import {
   HttpBody,
   HttpClient,
@@ -6,7 +6,7 @@ import {
   HttpClientRequest,
   HttpClientResponse,
 } from "effect/unstable/http";
-import { OpenCode, Transfer } from "../src/opencode-client.ts";
+import { OpenCode } from "../src/opencode-client.ts";
 
 const options = {
   url: "http://127.0.0.1:4321",
@@ -43,13 +43,11 @@ interface FakeOptions {
     | "list"
     | "delete"
     | "interrupt";
-  readonly patchStatus?: number | undefined;
-  readonly patchLostReply?: boolean | undefined;
-  readonly patchNoCommit?: boolean | undefined;
-  readonly patchCorrupt?: boolean | undefined;
-  readonly hangPatch?: boolean | undefined;
-  readonly confirmInfo?: object | undefined;
-  readonly confirmBody?: object | undefined;
+  readonly deleteFailures?: number;
+  readonly deleteMissing?: boolean;
+  readonly deleteLostReply?: boolean;
+  readonly hangDelete?: boolean;
+  readonly createDelay?: number;
   readonly agentModel?: boolean;
   readonly noAgent?: boolean;
   readonly hangAgent?: boolean;
@@ -60,7 +58,6 @@ interface FakeOptions {
   readonly hangCommand?: boolean;
   readonly holdTerminal?: boolean;
   readonly slowList?: boolean | undefined;
-  readonly hangExport?: boolean | undefined;
   readonly noConnected?: boolean;
   readonly closeEvent?: boolean;
   readonly noEvent?: boolean;
@@ -74,7 +71,6 @@ interface FakeOptions {
   readonly pages?: ReadonlyArray<ReadonlyArray<object>>;
   readonly loop?: boolean;
   readonly payloads?: Partial<Record<NonNullable<FakeOptions["fault"]>, object>>;
-  readonly exports?: Readonly<Record<string, object>>;
 }
 
 const hung = (config: FakeOptions, method: string, path: string) =>
@@ -85,13 +81,27 @@ const hung = (config: FakeOptions, method: string, path: string) =>
 class FakeServer {
   readonly requests: string[] = [];
   readonly bodies: string[] = [];
+  readonly retained = new Map<string, object>();
   get sessionsCreated() {
     return this.requests.filter((request) => request === "POST /api/session").length;
   }
-  private controller: ReadableStreamDefaultController<Uint8Array> | undefined;
-  private readonly marked = new Map<string, Schema.JsonObject>();
+  get commandsStarted() {
+    return this.requests.filter(
+      (request) => request.startsWith("POST ") && request.endsWith("/command"),
+    ).length;
+  }
+  private readonly controllers = new Set<ReadableStreamDefaultController<Uint8Array>>();
+  private created = 0;
+  private latestCommand = "ses_one";
   private pluginReads = 0;
-  constructor(private readonly config: FakeOptions) {}
+  private deleteFailures: number;
+  private readonly pages: object[][];
+  constructor(private readonly config: FakeOptions) {
+    this.deleteFailures = config.deleteFailures ?? 0;
+    this.pages = config.pages?.map((page) => [...page]) ?? [[]];
+    for (const item of this.pages.flat())
+      if ("id" in item && typeof item.id === "string") this.retained.set(item.id, item);
+  }
 
   private answer(
     request: HttpClientRequest.HttpClientRequest,
@@ -107,47 +117,62 @@ class FakeServer {
   }
 
   private emit(type: string, data: object) {
-    this.controller?.enqueue(
-      new TextEncoder().encode(`data: ${JSON.stringify({ type, data })}\n\n`),
-    );
+    for (const controller of this.controllers)
+      controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type, data })}\n\n`));
   }
 
   private event(request: HttpClientRequest.HttpClientRequest) {
     if (this.config.fault === "event") return this.answer(request, "event", {});
+    let current: ReadableStreamDefaultController<Uint8Array>;
     return HttpClientResponse.fromWeb(
       request,
       new Response(
         new ReadableStream<Uint8Array>({
           start: (controller) => {
-            this.controller = controller;
+            current = controller;
+            this.controllers.add(controller);
             if (this.config.invalidEvent)
               controller.enqueue(
                 new TextEncoder().encode(`data: ${JSON.stringify(this.config.invalidEvent)}\n\n`),
               );
             this.emit(this.config.noConnected ? "server.warming" : "server.connected", {});
-            if (this.config.closeEvent) controller.close();
+            if (this.config.closeEvent) {
+              controller.close();
+              this.controllers.delete(controller);
+            }
+          },
+          cancel: () => {
+            this.controllers.delete(current);
           },
         }),
       ),
     );
   }
 
-  private command(request: HttpClientRequest.HttpClientRequest) {
+  private command(request: HttpClientRequest.HttpClientRequest, id: string) {
     if (this.config.fault === "command") return this.answer(request, "command", {});
-    if (this.config.noEvent) this.emit("session.message.updated", { sessionID: "ses_one" });
+    this.latestCommand = id;
+    if (this.config.noEvent) this.emit("session.message.updated", { sessionID: id });
     if (!this.config.closeEvent && !this.config.noEvent) {
       this.emit("session.execution.succeeded", { sessionID: "ses_other" });
-      this.emit("session.execution.started", { sessionID: "ses_one" });
-      if (!this.config.holdTerminal) this.finish();
+      this.emit("session.execution.started", { sessionID: id });
+      if (!this.config.holdTerminal) this.finish(id);
     }
     return HttpClientResponse.fromWeb(request, new Response(null, { status: 204 }));
   }
 
-  readonly finish = () =>
+  readonly finish = (id = this.latestCommand) => {
+    const current = this.retained.get(id);
+    if (current)
+      this.retained.set(id, {
+        ...current,
+        outcome: this.config.outcome === "none" ? undefined : (this.config.outcome ?? "succeeded"),
+      });
     this.emit(`session.execution.${this.config.event ?? "succeeded"}`, {
-      sessionID: "ses_one",
+      sessionID: id,
       ...(this.config.errorType ? { error: { type: this.config.errorType } } : {}),
     });
+  };
 
   private messages(request: HttpClientRequest.HttpClientRequest) {
     const content = this.config.messageMissing
@@ -168,7 +193,14 @@ class FakeServer {
   }
 
   private sessions(request: HttpClientRequest.HttpClientRequest, url: URL) {
-    if (request.method === "POST") return this.answer(request, "create", { data: session() });
+    if (request.method === "POST") {
+      const created = session(++this.created === 1 ? "ses_one" : `ses_${this.created}`);
+      if (this.config.fault !== "create") {
+        this.retained.set(created.id, created);
+        this.pages[0]!.push(created);
+      }
+      return this.answer(request, "create", { data: created });
+    }
     if (
       url.searchParams.get("directory") !== "/workspace" ||
       url.searchParams.get("limit") !== "100"
@@ -178,18 +210,15 @@ class FakeServer {
       ? Number(url.searchParams.get("cursor")?.slice(4)) - 1
       : 0;
     return this.answer(request, "list", {
-      data:
-        this.config.pages?.[index]?.map((item) =>
-          "id" in item && typeof item.id === "string" && this.marked.has(item.id)
-            ? { ...item, metadata: this.marked.get(item.id) }
-            : item,
-        ) ?? [],
+      data: (this.pages[index] ?? []).flatMap((item) =>
+        "id" in item && typeof item.id === "string"
+          ? this.retained.has(item.id)
+            ? [this.retained.get(item.id)!]
+            : []
+          : [item],
+      ),
       cursor: {
-        next: this.config.loop
-          ? "page2"
-          : this.config.pages?.[index + 1]
-            ? `page${index + 2}`
-            : null,
+        next: this.config.loop ? "page2" : this.pages[index + 1] ? `page${index + 2}` : null,
       },
     });
   }
@@ -242,33 +271,14 @@ class FakeServer {
     return this.messages(request);
   }
 
-  private export(request: HttpClientRequest.HttpClientRequest, url: URL) {
-    if (url.searchParams.get("sanitize") !== "false") throw new Error("Export must be raw");
-    const id = url.pathname.split("/")[4] ?? "";
-    const original = this.config.exports?.[id];
-    const marked = this.marked.get(id);
-    const data =
-      marked && original
-        ? (() => {
-            const transfer = Schema.decodeUnknownSync(Transfer)(original);
-            return { ...transfer, info: { ...transfer.info, metadata: marked } };
-          })()
-        : (original ?? {});
-    return HttpClientResponse.fromWeb(request, Response.json({ data }));
-  }
-
-  private patch(request: HttpClientRequest.HttpClientRequest, id: string) {
-    if (!(request.body instanceof HttpBody.Uint8Array) || !request.body.text)
-      throw new Error("Missing metadata PATCH");
-    const payload = Schema.decodeSync(
-      Schema.fromJsonString(Schema.Struct({ metadata: Schema.JsonObject })),
-    )(request.body.text);
-    if (!this.config.patchNoCommit && !this.config.patchStatus)
-      this.marked.set(
-        id,
-        this.config.patchCorrupt ? { summarizer: { published: true } } : payload.metadata,
+  private remove(request: HttpClientRequest.HttpClientRequest, id: string) {
+    if (this.config.hangDelete) return Effect.never;
+    if (this.deleteFailures-- > 0 || this.config.fault === "delete")
+      return Effect.succeed(
+        HttpClientResponse.fromWeb(request, new Response(null, { status: 503 })),
       );
-    if (this.config.patchLostReply)
+    const existed = this.retained.delete(id);
+    if (this.config.deleteLostReply && existed)
       return Effect.fail(
         new HttpClientError.HttpClientError({
           reason: new HttpClientError.TransportError({ request }),
@@ -277,24 +287,22 @@ class FakeServer {
     return Effect.succeed(
       HttpClientResponse.fromWeb(
         request,
-        new Response(null, { status: this.config.patchStatus ?? 204 }),
+        new Response(null, { status: !existed || this.config.deleteMissing ? 404 : 204 }),
       ),
     );
   }
 
   private detail(request: HttpClientRequest.HttpClientRequest, id: string) {
-    if (this.config.confirmBody)
-      return HttpClientResponse.fromWeb(request, Response.json(this.config.confirmBody));
-    const original = this.config.exports?.[id];
-    const info = original ? Schema.decodeUnknownSync(Transfer)(original).info : session(id);
+    if (!this.retained.has(id))
+      return HttpClientResponse.fromWeb(request, new Response(null, { status: 404 }));
     return this.answer(request, "session", {
-      data: this.config.confirmInfo ?? {
-        ...info,
+      data: {
+        ...this.retained.get(id),
         id,
         outcome: this.config.outcome === "none" ? undefined : (this.config.outcome ?? "succeeded"),
         location: { directory: "/workspace" },
         time: { created: 1, updated: 100, idle: 3 },
-        metadata: this.marked.get(id) ?? session(id).metadata,
+        metadata: session(id).metadata,
       },
     });
   }
@@ -309,19 +317,15 @@ class FakeServer {
     if (request.body instanceof HttpBody.Uint8Array && request.body.text)
       this.bodies.push(request.body.text);
     if (hung(this.config, request.method, url.pathname)) return Effect.never;
+    if (url.pathname === "/api/session" && request.method === "POST" && this.config.createDelay)
+      return Effect.sync(() => this.sessions(request, url)).pipe(
+        Effect.delay(this.config.createDelay),
+      );
     if (url.pathname.endsWith("/command") && this.config.hangCommand) return Effect.never;
     if (url.pathname === "/api/session" && this.config.slowList && request.method === "GET")
       return Effect.sync(() => this.sessions(request, url)).pipe(Effect.delay("12 seconds"));
-    if (url.pathname.startsWith("/api/experimental/session/") && this.config.hangExport)
-      return Effect.never;
-    if (
-      url.pathname.startsWith("/api/session/ses_") &&
-      request.method === "PATCH" &&
-      this.config.hangPatch
-    )
-      return Effect.never;
-    if (url.pathname.startsWith("/api/session/ses_") && request.method === "PATCH")
-      return Effect.suspend(() => this.patch(request, url.pathname.split("/")[3] ?? ""));
+    if (url.pathname.startsWith("/api/session/ses_") && request.method === "DELETE")
+      return Effect.suspend(() => this.remove(request, url.pathname.split("/")[3] ?? ""));
     return Effect.sync(() => {
       if (url.pathname === "/api/agent") return this.agent(request, url);
       if (url.pathname === "/api/command") {
@@ -334,26 +338,16 @@ class FakeServer {
       if (url.pathname === "/api/plugin") return this.plugins(request, url);
       if (url.pathname === "/api/session") return this.sessions(request, url);
       if (url.pathname === "/api/event") return this.event(request);
-      if (url.pathname.startsWith("/api/experimental/session/")) return this.export(request, url);
       if (!url.pathname.startsWith("/api/session/ses_")) throw new Error("Wrong session endpoint");
-      if (request.method === "DELETE")
-        return this.config.fault === "delete"
-          ? this.answer(request, "delete", {})
-          : HttpClientResponse.fromWeb(request, new Response(null, { status: 204 }));
-      if (
-        !url.pathname.startsWith("/api/session/ses_one/") &&
-        url.pathname !== "/api/session/ses_one" &&
-        !this.config.exports?.[url.pathname.split("/")[3] ?? ""]
-      )
-        throw new Error("Wrong session endpoint");
-      if (url.pathname.endsWith("/command")) return this.command(request);
+      const id = url.pathname.split("/")[3]!;
+      if (url.pathname.endsWith("/command")) return this.command(request, id);
       if (url.pathname.endsWith("/interrupt")) {
         if (url.searchParams.get("resume") !== "false")
           throw new Error("Interrupt attempted a resume");
         return this.answer(request, "interrupt", { interrupted: true });
       }
       if (url.pathname.endsWith("/message")) return this.message(request, url);
-      return this.detail(request, url.pathname.split("/")[3] ?? "ses_one");
+      return this.detail(request, id);
     });
   });
 }

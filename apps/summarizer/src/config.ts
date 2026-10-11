@@ -36,7 +36,6 @@ const configSchema = Schema.Struct({
   summary_timeout: Schema.optionalKey(duration),
   run_budget: Schema.optionalKey(duration),
   retry_waits: Schema.optionalKey(Schema.Array(duration)),
-  delete_sessions: Schema.optionalKey(Schema.Boolean),
   channels: Schema.Array(channelSchema),
 });
 
@@ -58,7 +57,6 @@ export interface Settings {
   readonly runBudget: Duration.Duration;
   readonly retryWaits: readonly Duration.Duration[];
   readonly maxAttempts: number;
-  readonly deleteSessions: boolean;
   readonly channels: readonly ChannelSettings[];
 }
 
@@ -108,7 +106,6 @@ export const decodeConfig = (text: string, home: string): Effect.Effect<Settings
       runBudget: config.run_budget ?? Duration.minutes(20),
       retryWaits,
       maxAttempts: retryWaits.length + 1,
-      deleteSessions: config.delete_sessions ?? false,
       channels: config.channels.map((channel) => ({
         id: channel.id,
         label: channel.label,

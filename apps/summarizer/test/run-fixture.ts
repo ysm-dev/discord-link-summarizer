@@ -1,4 +1,3 @@
-import { Service } from "@opencode/client/service";
 import { Effect, Layer, Logger, Redacted, Sink, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { HttpClient } from "effect/unstable/http";
@@ -17,7 +16,6 @@ opencode:
   directory: /workspace
   agent: summarizer
 since: 2026-09-01T00:00:00Z
-delete_sessions: true
 channels:
   - id: "10"
     label: News
@@ -26,12 +24,7 @@ export const at = Date.parse("2026-09-25T12:00:00Z");
 export const sinceDaysAgo = (days: number) =>
   config.replace("2026-09-01T00:00:00Z", new Date(at - days * 86_400_000).toISOString());
 
-export const setup = (
-  options: Parameters<typeof fakeOpenCode>[0] = {},
-  yaml = config,
-  discoverService: typeof Service.discover = Service.discover,
-  targetHttp?: HttpClient.HttpClient,
-) =>
+export const setup = (options: Parameters<typeof fakeOpenCode>[0] = {}, yaml = config) =>
   Effect.gen(function* () {
     yield* TestClock.setTime(at);
     const discord = new FakeDiscord();
@@ -41,9 +34,9 @@ export const setup = (
     const http = HttpClient.make((request, url) =>
       url.hostname === "discord.com"
         ? discord.client.execute(request)
-        : url.port === "4444" && targetHttp
-          ? targetHttp.execute(request)
-          : openCode.http.execute(request),
+        : url.origin === "http://127.0.0.1:4321"
+          ? openCode.http.execute(request)
+          : Effect.die(`Unexpected endpoint: ${url.origin}`),
     );
     let started = 0;
     let serverEnvironment: Readonly<Record<string, string | undefined>> = {};
@@ -73,13 +66,13 @@ export const setup = (
       Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
     );
     const invoke = (dryRun = false, watch = false) =>
-      run(settings, dryRun, Redacted.make("secret"), "/db", {}, watch, discoverService).pipe(
+      run(settings, dryRun, Redacted.make("secret"), "/db", {}, watch).pipe(
         Effect.provide(services),
       );
     const invokeWith = (text: string, dryRun = false) =>
       decodeConfig(text, "/home/test").pipe(
         Effect.flatMap((changed) =>
-          run(changed, dryRun, Redacted.make("secret"), "/db", {}, false, discoverService),
+          run(changed, dryRun, Redacted.make("secret"), "/db", {}, false),
         ),
         Effect.provide(services),
       );
@@ -139,7 +132,6 @@ export const stalledWork = (api: DiscordApi, settings: Settings, journal: Journa
   workOn(
     api,
     { run: () => Effect.never },
-    { publish: () => Effect.never },
     "bot",
     settings,
     journal,

@@ -1,14 +1,12 @@
 import { expect, it } from "./progress-fixture.ts";
 import { Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
-import type { HttpClient } from "effect/unstable/http";
 import { persistReady, readJournal } from "../src/channel-record.ts";
 import { decodeConfig } from "../src/config.ts";
 import { DiscordFailure } from "../src/discord-client.ts";
 import { fakeApi } from "./discord-api-fixture.ts";
 import {
   at,
-  captureLogs,
   config,
   failureSetup,
   rejectRename,
@@ -17,16 +15,6 @@ import {
   stalledWork,
 } from "./run-fixture.ts";
 import { session } from "./opencode-fake.ts";
-import { endpoint, harness, source } from "./session-publication-fake.ts";
-
-const retainedConfig = config.replace("delete_sessions: true", "delete_sessions: false");
-const olderRun = (exports: Readonly<Record<string, object>>, target?: HttpClient.HttpClient) =>
-  setup(
-    { pages: [[session("ses_old", "succeeded")]], exports },
-    retainedConfig,
-    async () => endpoint,
-    target,
-  );
 
 it.effect("rejects a missing configured command before starting any Attempt", () =>
   Effect.gen(function* () {
@@ -273,19 +261,6 @@ it.effect("refuses terminal threads whose parent, owner, archive or status chang
   }),
 );
 
-it.effect("retains a successful private session when interactive publication is unavailable", () =>
-  Effect.gen(function* () {
-    const { discord, invoke, openCode } = yield* setup({}, retainedConfig);
-    const post = discord.addMessage("10", "https://example.test/a", at - 1000);
-    expect(yield* invoke()).toBe(0);
-    expect(discord.threads.get(post.id)?.thread_metadata.archived).toBe(true);
-    expect(openCode.requests).toContain("POST /api/session");
-    expect(openCode.requests).not.toContain("DELETE /api/session/ses_one");
-    expect(yield* invoke()).toBe(0);
-    expect(openCode.requests.filter((request) => request === "POST /api/session")).toHaveLength(1);
-  }),
-);
-
 it.effect("retains an unfinished private session inside the timeout grace window", () =>
   Effect.gen(function* () {
     const { invoke, openCode } = yield* setup({
@@ -293,75 +268,6 @@ it.effect("retains an unfinished private session inside the timeout grace window
     });
     expect(yield* invoke()).toBe(0);
     expect(openCode.requests).not.toContain("DELETE /api/session/ses_live");
-  }),
-);
-
-it.effect("defers a malformed older terminal transcript without consuming Link Attempts", () =>
-  Effect.gen(function* () {
-    const { discord, invoke, openCode } = yield* olderRun({ ses_old: {} });
-    const post = discord.addMessage("10", "https://example.test/a", at - 1000);
-    const { logs, layer } = captureLogs();
-    expect(yield* invoke().pipe(Effect.provide(layer))).toBe(0);
-    expect(logs.join(" ")).toContain("Publication deferred ses_old:");
-    expect(discord.threads.get(post.id)?.thread_metadata.archived).toBe(true);
-    expect(openCode.requests).toContain(
-      "GET /api/experimental/session/ses_old/export?sanitize=false",
-    );
-    expect(openCode.requests).toContain("POST /api/session");
-  }),
-);
-
-it.effect("publishes an older terminal session and the current successful Attempt", () =>
-  Effect.gen(function* () {
-    const old = { ...source, info: { ...source.info, id: "ses_old" } };
-    const target = harness();
-    const { discord, invoke, openCode } = yield* olderRun(
-      { ses_old: old, ses_one: source },
-      target.http,
-    );
-    const post = discord.addMessage("10", "https://example.test/a", at - 1000);
-    const { logs, layer } = captureLogs();
-    expect(yield* invoke().pipe(Effect.provide(layer))).toBe(0);
-    expect(logs.join(" ")).not.toContain("Publication deferred");
-    expect(
-      target.requests.filter((r) => r === "POST /api/experimental/session/import"),
-    ).toHaveLength(2);
-    expect(openCode.requests).toContain("PATCH /api/session/ses_old");
-    expect(openCode.requests).toContain("PATCH /api/session/ses_one");
-    expect(discord.threads.get(post.id)?.thread_metadata.archived).toBe(true);
-    expect(yield* invoke()).toBe(0);
-    expect(
-      target.requests.filter((r) => r === "POST /api/experimental/session/import"),
-    ).toHaveLength(2);
-  }),
-);
-
-it.effect("logs deferred publication of a valid old transcript and keeps summarizing", () =>
-  Effect.gen(function* () {
-    const target = harness();
-    const { discord, invoke } = yield* olderRun(
-      { ses_old: { ...source, info: { ...source.info, id: "ses_old" } } },
-      target.http,
-    );
-    target.requests.length = 0;
-    const { logs, layer } = captureLogs();
-    const post = discord.addMessage("10", "https://example.test/a", at - 1000);
-    expect(yield* invoke().pipe(Effect.provide(layer))).toBe(0);
-    expect(logs.join(" ")).toContain("Publication deferred ses_one");
-    expect(discord.threads.get(post.id)?.thread_metadata.archived).toBe(true);
-  }),
-);
-
-it.effect("logs an unavailable publication sweep without blocking a Link", () =>
-  Effect.gen(function* () {
-    const { discord, invoke } = yield* setup({}, retainedConfig, async () => undefined);
-    const post = discord.addMessage("10", "https://example.test/a", at - 1000);
-    const { logs, layer } = captureLogs();
-    expect(yield* invoke().pipe(Effect.provide(layer))).toBe(0);
-    expect(logs.join(" ")).toContain(
-      "Publication deferred: Interactive OpenCode service unavailable",
-    );
-    expect(discord.threads.get(post.id)?.thread_metadata.archived).toBe(true);
   }),
 );
 

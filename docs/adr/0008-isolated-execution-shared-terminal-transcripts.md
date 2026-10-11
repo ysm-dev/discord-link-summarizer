@@ -1,5 +1,9 @@
 # Isolate execution and publish completed sessions
 
+Publication and retention are superseded by [ADR-0012](0012-discord-only-summaries.md).
+Private persistent database isolation and independently provisioned credentials
+remain in force. The following records the original decision and transfer protocol.
+
 The operator requires completed Summarizer sessions in the interactive session
 list, prohibits upstream changes, and requires interactive use to remain
 undisturbed. OpenCode v2.0.15's managed restart sweep can resume private executions

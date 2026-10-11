@@ -1,4 +1,3 @@
-import { Service } from "@opencode/client/service";
 import {
   Clock,
   Context,
@@ -6,7 +5,6 @@ import {
   DateTime,
   Duration,
   Effect,
-  Fiber,
   Layer,
   Option,
   Redacted,
@@ -34,7 +32,6 @@ import { linkFromPost, linkPostState } from "./link-post.ts";
 import { OpenCode } from "./opencode-client.ts";
 import { OpenCodeServer } from "./opencode-server.ts";
 import { runQueue } from "./run-queue.ts";
-import { SessionPublication } from "./session-publication.ts";
 import { ProgressStore } from "./progress-store.ts";
 import { normalLowerBound } from "./window.ts";
 import { measured } from "./performance.ts";
@@ -377,7 +374,6 @@ export const run = (
   database: string,
   environment: Readonly<Record<string, string>>,
   watch: boolean,
-  discoverService: typeof Service.discover = Service.discover,
 ) =>
   Effect.gen(function* () {
     const started = yield* Clock.currentTimeMillis;
@@ -422,43 +418,16 @@ export const run = (
       directory: settings.opencode.directory,
       agent: settings.opencode.agent,
     });
-    const layer = SessionPublication.layer(settings.opencode.directory, discoverService).pipe(
-      Layer.provideMerge(privateLayer),
-    );
     return yield* Effect.gen(function* () {
       const client = yield* OpenCode;
-      const publication = yield* SessionPublication;
       yield* client.commands([...new Set(valid.map(({ channel }) => channel.command))]);
       // Without its extraction tools the model posts refusals as Summaries; fail the Run instead.
       yield* client.plugins([extractionPluginID]);
       const stale =
         (yield* Clock.currentTimeMillis) - Duration.toMillis(settings.summaryTimeout) - 120_000;
-      yield* client.sweep(stale, settings.deleteSessions);
-      const publishing = yield* Effect.forkScoped(
-        measured(
-          "transcript-maintenance",
-          publication
-            .pending(settings.deleteSessions)
-            .pipe(
-              Effect.catch((error) =>
-                Effect.logWarning(`Publication deferred: ${error.reason}`).pipe(
-                  Effect.as(undefined),
-                ),
-              ),
-            ),
-        ).pipe(
-          Effect.flatMap((pending) =>
-            Effect.gen(function* () {
-              if (pending)
-                for (const result of pending)
-                  if (result.type === "deferred")
-                    yield* Effect.logWarning(`Publication deferred ${result.id}: ${result.reason}`);
-            }),
-          ),
-        ),
-      );
+      const removed = yield* client.sweep(stale);
+      if (removed > 0) yield* Effect.logInfo(`Deleted ${removed} leftover OpenCode sessions`);
       const admitted = yield* runQueue(api, identity.user.id, settings, journals, budget, watch);
-      yield* Fiber.join(publishing);
       for (const { channel } of valid) {
         const settled = yield* settleRecord(journals.get(channel.id)!);
         // Keep completed archive passes across Runs until every channel has reached work admission.
@@ -466,7 +435,7 @@ export const run = (
           yield* updateRecord(settled, { ...settled.record, archiveComplete: false });
       }
       return skipped ? 1 : 0;
-    }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(privateLayer));
   }).pipe(
     Effect.scoped,
     Effect.provide(DiscordLive(token)),

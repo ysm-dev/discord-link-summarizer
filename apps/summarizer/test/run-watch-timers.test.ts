@@ -78,11 +78,7 @@ it.effect("an overdue retry waits for a full worker pool without spinning", () =
     expect(getReads() - before).toBeLessThanOrEqual(4);
     expect(openCode.sessionsCreated).toBe(1);
     openCode.finish();
-    yield* waitFor(
-      () =>
-        openCode.requests.filter((request) => request === "POST /api/session/ses_one/command")
-          .length === 2,
-    );
+    yield* waitFor(() => openCode.commandsStarted === 2);
     expect(discord.threads.get(slow.id)?.thread_metadata.archived).toBe(true);
     openCode.finish();
     yield* TestClock.adjust("5 seconds");
@@ -114,11 +110,7 @@ it.effect("watch wakes at the earliest of multiple retry deadlines between polls
     expect(discord.messages.get(second.id)).toHaveLength(2);
     openCode.finish();
     yield* TestClock.adjust("2 seconds");
-    yield* waitFor(
-      () =>
-        openCode.requests.filter((request) => request === "POST /api/session/ses_one/command")
-          .length === 2,
-    );
+    yield* waitFor(() => openCode.commandsStarted === 2);
     openCode.finish();
     yield* TestClock.adjust("3 seconds");
     expect(yield* Fiber.join(fiber)).toBe(0);
